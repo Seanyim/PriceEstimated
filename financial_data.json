@@ -1,0 +1,104 @@
+{
+    "TSLA": {
+        "meta": {
+            "unit": "Billion (十亿)"
+        },
+        "records": [
+            {
+                "Year": 2024,
+                "Period": "Q1",
+                "Revenue": 100.0,
+                "Profit": 50.0,
+                "EPS": 1.0,
+                "WACC": 0.08
+            },
+            {
+                "Year": 2025,
+                "Period": "Q1",
+                "Revenue": 110.0,
+                "Profit": 65.0,
+                "EPS": 1.5,
+                "WACC": 0.08
+            }
+        ]
+    },
+    "NVDA": {
+        "meta": {
+            "unit": "Billion (十亿)"
+        },
+        "records": [
+            {
+                "Year": 2026,
+                "Period": "Q9",
+                "Revenue": 147.811,
+                "Profit": 77.107,
+                "EPS": 3.14,
+                "FCF": 61.772
+            },
+            {
+                "Year": 2026,
+                "Period": "H1",
+                "Revenue": 90.805,
+                "Profit": 45.197,
+                "EPS": 1.84,
+                "FCF": 39.657
+            },
+            {
+                "Year": 2026,
+                "Period": "Q1",
+                "Revenue": 44.062,
+                "Profit": 18.775,
+                "EPS": 0.76,
+                "FCF": 26.187
+            },
+            {
+                "Year": 2025,
+                "Period": "FY",
+                "Revenue": 130.497,
+                "Profit": 72.88,
+                "EPS": 2.94,
+                "FCF": 60.853
+            },
+            {
+                "Year": 2025,
+                "Period": "Q9",
+                "Revenue": 91.166,
+                "Profit": 50.789,
+                "EPS": 2.04,
+                "FCF": 45.301
+            },
+            {
+                "Year": 2025,
+                "Period": "H1",
+                "Revenue": 56.084,
+                "Profit": 31.48,
+                "EPS": 1.27,
+                "FCF": 28.487
+            },
+            {
+                "Year": 2025,
+                "Period": "Q1",
+                "Revenue": 26.044,
+                "Profit": 14.881,
+                "EPS": 0.6,
+                "FCF": 14.976
+            },
+            {
+                "Year": 2024,
+                "Period": "FY",
+                "Revenue": 60.922,
+                "Profit": 29.76,
+                "EPS": 1.19,
+                "FCF": 27.021
+            },
+            {
+                "Year": 2024,
+                "Period": "Q9",
+                "Revenue": 38.819,
+                "Profit": 17.475,
+                "EPS": 0.7,
+                "FCF": 15.776
+            }
+        ]
+    }
+}
