@@ -21,8 +21,13 @@
 - update ttm period calculation 
 - update charts and yoy data looks
 - upload local files to github repository
+- update NVDA financial data
 
 ### questionable
 - DCF 
 - wacc calculation 
 - PEG revise by fisher interest
+
+## 2025/12/31
+### updates
+- review and update DCF & WACC 
