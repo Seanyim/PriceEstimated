@@ -33,3 +33,7 @@
 - review and update DCF & WACC 
 - update config financial data list
 - update logic if financial data needs record
+
+### questionable
+- config needs shares & stock price calculation instead of market cap
+- DCF, WACC, E/V, D/V check
