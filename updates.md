@@ -37,3 +37,16 @@
 ### questionable
 - config needs shares & stock price calculation instead of market cap
 - DCF, WACC, E/V, D/V check
+
+## 2026/1/8
+### updates 
+- clear FCF TTM model
+- clear E/V, D/V use newest financial data not TTM calculation 
+- update README
+- update venv for different enviroment
+- update PE & PEG model with TTM 
+
+### questionable
+- growth quality R 
+- monte carlo -> stock not options
+- financial data need update
