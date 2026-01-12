@@ -7,6 +7,15 @@
 # default: 默认值
 # modules/config.py
 FINANCIAL_METRICS = [
+    # --- 核心市场数据 (Prompt 强制约束) ---
+    {
+        "id": "Close_Price",
+        "label": "财报月收盘价",
+        "help": "用于构建历史 PE 区间 (Prompt V2 要求: Price_t = ClosePrice_of_Financial_Report_Month)",
+        "default": 0.0,
+        "calc_growth": False, # 单独处理，不作为常规财务指标绘图
+        "format": "%.3f"
+    },
     # --- 核心增长指标 (需要绘图/计算增长率) ---
     {
         "id": "Revenue",

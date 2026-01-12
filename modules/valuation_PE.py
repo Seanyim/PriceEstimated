@@ -1,144 +1,221 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 from modules.calculator import process_financial_data
 
 def render_valuation_PE_tab(df, unit_label):
-    st.subheader("多维 PE 估值模型 (TTM / Static / Dynamic / PEG)")
+    st.markdown("### 🧬 PE 状态变量分析系统 (State Variable System)")
+    st.caption("基于 Prompt V2: PE 不是数值标签，而是由 [价格-增长-历史] 共同定义的动态状态。")
     
     if df.empty:
-        st.warning("暂无数据，请先在数据录入页添加财务数据。")
+        st.warning("暂无数据。")
         return
 
-    # --- 1. 数据预处理 ---
-    # 调用 calculator 模块，获取清洗后的累计数据(cum)和单季度数据(single)
-    # df_single 中包含了拆分好的 'EPS_Single' 和自动计算的 'EPS_Single_YoY'
+    # --- 1. 数据驱动引擎 (Data Engine) ---
+    # 获取清洗后的数据 (含 TTM 和 YoY)
     df_cum, df_single = process_financial_data(df)
     
-    # 确保数据按时间正序排列
+    # 确保排序
     df_single = df_single.sort_values(by=['Year', 'Sort_Key'])
-    df_cum = df_cum.sort_values(by=['Year', 'Sort_Key'])
-
-    # --- 2. 关键指标计算 ---
     
-    # A. 静态 EPS (Static EPS) - 取最近一个完整财年 (FY) 的 EPS
-    last_fy_data = df_cum[df_cum['Period'] == 'FY']
-    if not last_fy_data.empty:
-        static_eps = last_fy_data.iloc[-1]['EPS']
-        static_year = int(last_fy_data.iloc[-1]['Year'])
-    else:
-        static_eps = 0.0
-        static_year = "-"
-
-    # B. 滚动 EPS (TTM EPS) - 最近 4 个单季度的 EPS 之和
-    # 只有当数据量 >= 4 时计算才有意义
+    # 核心变量提取
+    latest_record = df_single.iloc[-1]
+    
+    # A. 提取 EPS (TTM) - 严格定义: Sum of last 4 reported quarters
     if len(df_single) >= 4:
         ttm_eps = df_single['EPS_Single'].tail(4).sum()
-        ttm_label = "过去4季度"
+        ttm_label = "TTM (近4季)"
     else:
-        # 数据不足时降级为使用静态 EPS 或当前累计
-        ttm_eps = df_single['EPS_Single'].sum() 
-        ttm_label = "数据不足4季(仅统计现有)"
+        ttm_eps = df_single['EPS_Single'].sum()
+        ttm_label = "TTM (数据不足,仅统计现有)"
+        
+    # B. 提取增长率 (Growth State)
+    # 优先使用 TTM 的同比增长，因为它熨平了季节性
+    # 如果没有 TTM YoY (例如数据太少), 退化为 单季 YoY
+    if 'EPS_TTM_YoY' in df_single.columns and not pd.isna(latest_record.get('EPS_TTM_YoY')):
+        growth_rate = latest_record['EPS_TTM_YoY']
+        growth_source = "EPS TTM YoY"
+    else:
+        growth_rate = latest_record.get('EPS_Single_YoY', 0.0)
+        growth_source = "EPS Single YoY"
 
-    # C. 获取增长率参考值 (Reference Growth Rate)
-    # 优先取最近单季度的 EPS 同比增长率
-    latest_single = df_single.iloc[-1]
-    ref_growth = latest_single.get('EPS_Single_YoY', 0.0)
+    # C. 构建历史 PE 上下文 (Historical Context)
+    # Prompt 要求: Price_t = ClosePrice_of_Financial_Report_Month
+    # 我们需要在 df_single 中计算历史每个时间点的 PE
+    has_price = 'Close_Price_Single' in df_single.columns # Process data 会把 Close_Price 复制到 Single
     
-    # 如果单季增长率无效(如NaN)，尝试取累计增长率
-    if pd.isna(ref_growth) or ref_growth == 0:
-        latest_cum = df_cum.iloc[-1]
-        ref_growth = latest_cum.get('EPS_YoY', 0.0)
-
-    # --- 3. 界面交互 ---
-
-    # 输入：股价
-    col_input, _ = st.columns([1, 2])
+    historical_pes = []
+    if has_price:
+        # 计算历史每一期的 PE (TTM)
+        # 注意：每一期的 PE = 当期收盘价 / 当期 TTM EPS
+        for i in range(len(df_single)):
+            # 只有当 TTM 窗口足够 (比如 >=4) 且 EPS > 0 时，历史 PE 才有意义
+            # 这里为了尽可能展示数据，放宽到有 TTM 数据即可
+            p = df_single.iloc[i].get('Close_Price_Single', 0)
+            e = df_single.iloc[i].get('EPS_TTM', 0) # calculator.py 需要确保计算了 EPS_TTM
+            if p > 0 and e > 0:
+                historical_pes.append(p / e)
+    
+    hist_pe_series = pd.Series(historical_pes)
+    
+    # --- 2. 用户交互与当前状态输入 ---
+    
+    col_input, col_info = st.columns([1, 2])
     with col_input:
-        current_price = st.number_input("当前股价", min_value=0.0, value=100.0, step=0.1)
+        # 允许用户输入当前价格来模拟 "Now" 的状态，或者默认使用最近财报价格
+        default_price = float(latest_record.get('Close_Price_Single', 100.0))
+        if default_price == 0: default_price = 100.0
+        
+        current_price = st.number_input("当前价格 (Price_t)", value=default_price, step=0.1)
+    
+    with col_info:
+        # 显示当前的基础状态
+        st.info(f"""
+        **基础状态数据**:
+        * **EPS ({ttm_label})**: {ttm_eps:.3f}
+        * **增速 ({growth_source})**: {growth_rate:.2%}
+        * **有效历史 PE 样本数**: {len(historical_pes)} 个
+        """)
 
     st.markdown("---")
 
-    # --- 4. 四大估值指标展示 ---
-    col1, col2, col3, col4 = st.columns(4)
+    # --- 3. 核心逻辑：状态判定 (State Determination) ---
 
-    # [1] 静态市盈率 (Static PE)
-    with col1:
-        st.markdown("##### 🏛️ 静态 PE (Static)")
-        st.caption(f"基准: {static_year} FY EPS = {static_eps:.2f}")
+    # [逻辑分支 1] EPS <= 0: 亏损状态处理
+    if ttm_eps <= 0:
+        st.error("⚠️ 当前处于 [亏损/早期] 状态 (EPS TTM ≤ 0)")
+        st.markdown("""
+        **根据 Prompt V2 约束，禁止计算数值 PE。**
         
-        if static_eps > 0:
-            static_pe = current_price / static_eps
-            st.metric("Static PE", f"{static_pe:.2f}x")
+        **请关注以下状态变量：**
+        1.  **亏损收窄速度**: 检查净利润 QoQ 是否为正。
+        2.  **盈亏平衡点**: 预计何时转正？
+        3.  **PS (市销率)**: 建议切换到 PS 估值模型。
+        """)
+        # 提前结束，不展示 PE 仪表盘
+        return
+
+    # [逻辑分支 2] 正常盈利状态
+    current_pe = current_price / ttm_eps
+    
+    # 3.1 计算 PEG 联动状态
+    # PEG = PE / (Growth * 100)
+    # 保护: 如果增长率为负或0，PEG 无意义
+    if growth_rate > 0:
+        peg = current_pe / (growth_rate * 100)
+    else:
+        peg = None
+
+    # 3.2 判定历史位置
+    pe_rank_str = "无历史数据"
+    if not hist_pe_series.empty:
+        pe_median = hist_pe_series.median()
+        pe_min = hist_pe_series.min()
+        pe_max = hist_pe_series.max()
+        
+        # 简单的分位判断
+        if current_pe < hist_pe_series.quantile(0.2):
+            pe_pos = "极低 (Low)"
+            color = "green"
+        elif current_pe < hist_pe_series.quantile(0.8):
+            pe_pos = "中枢 (Neutral)"
+            color = "blue"
         else:
-            st.metric("Static PE", "N/A", help="EPS <= 0 或无FY数据")
+            pe_pos = "极高 (High)"
+            color = "red"
+    else:
+        pe_median = 0
+        pe_pos = "未知 (Unknown)"
+        color = "gray"
 
-    # [2] 滚动市盈率 (TTM PE) - 市场最常用
-    with col2:
-        st.markdown("##### 🔄 滚动 PE (TTM)")
-        st.caption(f"基准: {ttm_label} EPS = {ttm_eps:.2f}")
-        
-        if ttm_eps > 0:
-            ttm_pe = current_price / ttm_eps
-            st.metric("TTM PE", f"{ttm_pe:.2f}x")
+    # --- 4. 状态仪表盘 (State Dashboard) ---
+    
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.metric("PE (TTM) 状态值", f"{current_pe:.2f}x", delta_color="off")
+        st.caption(f"历史中位数: {pe_median:.2f}x")
+    
+    with c2:
+        if peg:
+            status = "低估" if peg < 1 else ("高估" if peg > 2 else "合理")
+            st.metric("PEG 联动状态", f"{peg:.2f}", f"{status}")
         else:
-            st.metric("TTM PE", "N/A", help="TTM EPS <= 0")
+            st.metric("PEG 联动状态", "无效", "负增长/零增长")
+        st.caption(f"对应增速: {growth_rate:.1%}")
 
-    # [3] 动态市盈率 (Forward PE)
-    with col3:
-        st.markdown("##### 🔮 动态 PE (Forward)")
-        # 允许用户调整预期增长率，默认使用历史计算出的增长率
-        default_g = float(ref_growth * 100) if not pd.isna(ref_growth) else 10.0
-        expected_g = st.number_input("预期增速(%)", value=default_g, step=1.0, format="%.1f") / 100.0
-        
-        # 估算下一年 EPS = TTM EPS * (1 + g) 
-        # (注：也可以基于静态EPS估算，这里采用TTM更贴近现状)
-        base_eps = ttm_eps if ttm_eps > 0 else static_eps
-        forward_eps = base_eps * (1 + expected_g)
-        
-        st.caption(f"预估 Next EPS: {forward_eps:.2f}")
-        
-        if forward_eps > 0:
-            forward_pe = current_price / forward_eps
-            st.metric("Forward PE", f"{forward_pe:.2f}x")
-        else:
-            st.metric("Forward PE", "N/A")
+    with c3:
+        st.markdown(f"**历史区间位置**")
+        st.markdown(f":{color}[**{pe_pos}**]")
+        if not hist_pe_series.empty:
+            st.caption(f"Range: [{pe_min:.1f}x - {pe_max:.1f}x]")
 
-    # [4] PEG 估值
-    with col4:
-        st.markdown("##### ⚖️ PEG 比率")
-        # PEG = TTM PE / (预期增长率 * 100)
-        # 也就是：你为了这 1% 的增长支付了多少倍的 PE
+    # --- 5. 综合结论输出 (Agent Output) ---
+    st.markdown("### 📝 估值状态结论 (Agent Output)")
+    
+    conclusion = ""
+    if peg and peg < 0.8 and growth_rate > 0.2:
+        conclusion = "**[强力买入区 - GARP]**: PE 相对低估，且伴随高增长，PEG < 0.8。属于典型的 '戴维斯双击' 潜力区。"
+    elif peg and peg > 2.0:
+        conclusion = "**[风险泡沫区]**: 估值 (PE) 显著高于增长 (G) 的支撑能力。除非有极其确定的加速增长预期，否则需警惕均值回归。"
+    elif growth_rate < 0:
+        conclusion = "**[价值陷阱警示]**: PE 可能看起来很低，但 EPS 在负增长。这是 '周期性下行' 或 '基本面恶化' 的特征，由于分母变小，未来 PE 会被动升高。"
+    elif abs(current_pe - pe_median) / pe_median < 0.15:
+        conclusion = "**[合理定价区]**: 当前 PE 处于历史中枢附近，且 PEG 在合理范围。未来回报主要取决于 EPS 的实质增长。"
+    else:
+        conclusion = "**[观察区]**: 状态特征不明显，建议结合宏观利率环境进一步判断。"
+
+    st.success(conclusion)
+
+    # --- 6. 可视化：PE Band (历史 PE 通道) ---
+    if not hist_pe_series.empty and has_price:
+        st.subheader("📉 历史 PE 通道 (Valuation Band)")
         
-        calc_g_val = expected_g * 100 # 使用用户刚才确认的预期增长率
+        # 构造绘图数据
+        df_chart = df_single.copy()
+        # 过滤掉 EPS <= 0 的点
+        df_chart = df_chart[df_chart['EPS_TTM'] > 0]
         
-        st.caption(f"计算基准: TTM PE / G({calc_g_val:.1f})")
-        
-        if ttm_eps > 0 and calc_g_val > 0:
-            # 重新计算当前的 TTM PE
-            pe_now = current_price / ttm_eps
-            peg = pe_now / calc_g_val
+        if not df_chart.empty:
+            df_chart['Date_Label'] = df_chart['Year'].astype(str) + " " + df_chart['Quarter_Name']
             
-            st.metric("PEG Ratio", f"{peg:.2f}")
-            
-            if peg < 0.8:
-                st.success("低估 (<0.8)")
-            elif peg > 2.0:
-                st.error("高估 (>2.0)")
-            else:
-                st.info("合理区间")
-        else:
-            st.metric("PEG", "N/A", help="PE或增长率为负，PEG失效")
+            fig = go.Figure()
 
-    # --- 5. 辅助数据表 ---
-    with st.expander("查看计算详情 (单季EPS与TTM构成)"):
-        # 展示最近4个季度的构成
-        if len(df_single) > 0:
-            st.write("最近 4 个季度数据 (用于计算 TTM):")
-            cols = ['Year', 'Quarter_Name', 'EPS_Single', 'EPS_Single_YoY']
-            # 取最后4行并反转，方便查看最新的
-            display_df = df_single[cols].tail(4).iloc[::-1].copy()
-            st.dataframe(display_df.style.format({
-                "EPS_Single": "{:.3f}", 
-                "EPS_Single_YoY": "{:.2%}"
-            }))
+            # 实际价格线
+            fig.add_trace(go.Scatter(
+                x=df_chart['Date_Label'], y=df_chart['Close_Price_Single'],
+                mode='lines+markers', name='实际股价 (Price)',
+                line=dict(color='black', width=3)
+            ))
+            
+            # 理论价格线 (基于历史 PE 分位 * 当期 EPS)
+            # P_implied = PE_benchmark * EPS_TTM
+            pe_20 = hist_pe_series.quantile(0.2)
+            pe_50 = hist_pe_series.quantile(0.5)
+            pe_80 = hist_pe_series.quantile(0.8)
+            
+            fig.add_trace(go.Scatter(
+                x=df_chart['Date_Label'], y=df_chart['EPS_TTM'] * pe_80,
+                mode='lines', name=f'高估线 (PE={pe_80:.1f}x)',
+                line=dict(color='rgba(255, 0, 0, 0.3)', dash='dash')
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=df_chart['Date_Label'], y=df_chart['EPS_TTM'] * pe_50,
+                mode='lines', name=f'中枢线 (PE={pe_50:.1f}x)',
+                line=dict(color='rgba(0, 0, 255, 0.3)', dash='dash')
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=df_chart['Date_Label'], y=df_chart['EPS_TTM'] * pe_20,
+                mode='lines', name=f'低估线 (PE={pe_20:.1f}x)',
+                line=dict(color='rgba(0, 255, 0, 0.3)', dash='dash')
+            ))
+
+            fig.update_layout(title="股价 vs 估值锚点 (基于历史 PE 区间)", hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("注：虚线代表若股价按照历史 PE (P20/P50/P80) 交易时的理论价格。")
+    
+    else:
+        st.info("需要更多包含 'Close_Price' 和正收益的数据点来生成 PE 通道图。")
