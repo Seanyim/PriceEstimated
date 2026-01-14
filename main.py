@@ -1,90 +1,65 @@
-# main.py
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from data_manager import load_data, save_data
+from modules.db import init_db, get_all_tickers, save_company_meta, get_financial_records, get_company_meta
 from modules.data_entry import render_entry_tab
 from modules.charts import render_charts_tab
 from modules.valuation_PE import render_valuation_PE_tab
 from modules.valuation_DCF import render_valuation_DCF_tab
 from modules.wacc import render_wacc_module
 
+st.set_page_config(page_title="Valuation Pro (SQLite)", layout="wide")
+st.title("📊 企业估值系统 (SQLite Integrated)")
 
-st.set_page_config(page_title="公司估值工具", layout="wide")
-st.title("📊 企业财务分析与估值软件 (Pro Ver 1.15)")
+# 初始化数据库
+init_db()
 
-# --- 侧边栏逻辑 ---
+# --- 侧边栏 ---
 st.sidebar.header("🏢 公司管理")
-data_store = load_data()
 
-# 1. 新建公司 (增加了单位选择)
-with st.sidebar.form("add_company_form"):
-    new_name = st.text_input("新建公司名称 (例如: Apple)")
-    # 让用户选择该公司的记账单位
-    selected_unit = st.selectbox("金额单位", ["Billion (十亿)", "Million (百万)"]) 
-    submitted = st.form_submit_button("添加公司")
-
-    if submitted and new_name:
-        if new_name not in data_store:
-            # 【重要】新的数据结构：包含元数据(meta)和记录(records)
-            data_store[new_name] = {
-                "meta": {"unit": selected_unit},
-                "records": []
-            }
-            save_data(data_store)
-            st.success(f"已添加 {new_name}")
+# 1. 新建公司
+with st.sidebar.form("add_company"):
+    new_ticker = st.text_input("Ticker (e.g. AAPL)").upper()
+    new_name = st.text_input("公司名称 (e.g. Apple)")
+    new_unit = st.selectbox("单位", ["Billion", "Million"])
+    if st.form_submit_button("添加/更新公司"):
+        if new_ticker:
+            save_company_meta(new_ticker, new_name, new_unit)
+            st.success(f"已添加 {new_ticker}")
             st.rerun()
-        else:
-            st.warning("公司已存在")
 
 # 2. 选择公司
-company_list = list(data_store.keys())
-if not company_list:
-    st.info("请在左侧添加公司。")
+tickers = get_all_tickers()
+if not tickers:
+    st.info("请先添加公司")
     st.stop()
 
-selected_company = st.sidebar.selectbox("选择公司", company_list)
+selected_company = st.sidebar.selectbox("选择公司", tickers)
+meta = get_company_meta(selected_company)
+current_unit = meta.get('unit', 'Billion')
 
-# 【重要】读取数据的逻辑变了
-company_obj = data_store[selected_company]
+st.sidebar.markdown(f"**当前单位**: {current_unit}")
 
-# 兼容性处理：防止读取旧JSON报错（如果是旧格式，默认为Billion）
-if isinstance(company_obj, list):
-    st.error("检测到旧版数据格式，请删除 json 文件重置，或手动迁移数据。")
-    st.stop()
+# Proxy 设置
+proxy = st.sidebar.text_input("Proxy URL", value="http://127.0.0.1:10808", key="proxy_url")
 
-company_records = company_obj.get("records", [])
-company_meta = company_obj.get("meta", {"unit": "Billion"})
-current_unit = company_meta.get("unit", "Billion")
+# 读取财务数据
+raw_records = get_financial_records(selected_company)
+df_raw = pd.DataFrame(raw_records)
 
-# 在侧边栏显示当前单位
-st.sidebar.markdown(f"**当前单位:** `{current_unit}`")
-
-# 定义周期排序映射 (用于数据排序)
-PERIOD_ORDER = {"Q1": 1, "H1": 2, "Q9": 3, "FY": 4}
-
-# 预处理数据 #使用累计季报方式
-if company_records:
-    df = pd.DataFrame(company_records)
-    # 添加辅助列用于排序
-    df['Period_Order'] = df['Period'].map(PERIOD_ORDER)
-    # 按 年份 + 周期 排序
-    df = df.sort_values(by=['Year', 'Period_Order'])
-else:
-    df = pd.DataFrame()
-
-# --- 主界面逻辑 ---
-tab1, tab2, tab3 = st.tabs(["📝 数据录入", "📈 PE&PEG", "🧮 估值计算"])
+# --- 主界面 ---
+tab1, tab2, tab3 = st.tabs(["📝 数据录入", "📈 趋势分析", "🧮 估值模型"])
 
 with tab1:
-    # 传入 records 和 current_unit
-    render_entry_tab(selected_company, data_store, current_unit)
-    render_charts_tab(df, current_unit)
-
+    render_entry_tab(selected_company, current_unit)
 
 with tab2:
-    render_valuation_PE_tab(df, current_unit)
+    render_charts_tab(df_raw, current_unit)
+
 with tab3:
-    wacc_value, rf_value = render_wacc_module(df)
-    render_valuation_DCF_tab(df, wacc_value, rf_value, current_unit)
+    # PE 和 DCF 模块需要 calculator 处理后的数据，我们在模块内部调用 process_financial_data
+    # 所以直接传 df_raw 即可
+    st.markdown("### PE & DCF 模型")
+    render_valuation_PE_tab(df_raw, current_unit)
+    st.divider()
+    wacc, rf = render_wacc_module(df_raw)
+    render_valuation_DCF_tab(df_raw, wacc, rf, current_unit)

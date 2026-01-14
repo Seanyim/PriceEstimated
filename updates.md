@@ -50,3 +50,10 @@
 - growth quality R 
 - monte carlo -> stock not options
 - financial data need update
+
+## 2026/1/12
+### update 
+- create new branch 'fetch'
+- 'fetch' allows fetch data from yfinance 
+- 'fetch' uses qslite as databases
+

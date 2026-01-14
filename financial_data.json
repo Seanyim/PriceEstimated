@@ -1,7 +1,11 @@
 {
     "TSLA": {
         "meta": {
-            "unit": "Billion (十亿)"
+            "unit": "Billion (十亿)",
+            "ticker": "TSLA",
+            "market_cap": 1493159744797.455,
+            "sector": "Unknown",
+            "currency": "USD"
         },
         "records": [
             {
@@ -24,7 +28,11 @@
     },
     "NVDA": {
         "meta": {
-            "unit": "Billion (十亿)"
+            "unit": "Billion (十亿)",
+            "ticker": "NVDA",
+            "market_cap": 4502734239440.918,
+            "sector": "Unknown",
+            "currency": "USD"
         },
         "records": [
             {
