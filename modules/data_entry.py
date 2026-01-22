@@ -1,10 +1,66 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import date
+from datetime import date, datetime, timedelta
 from modules.config import FINANCIAL_METRICS
 from modules.db import get_financial_records, save_financial_record, save_company_meta, get_company_meta, get_market_history
 from modules.data_fetcher import get_fetcher
+
+
+def _filter_by_time_window(df: pd.DataFrame, time_window: str, date_col: str = 'date') -> pd.DataFrame:
+    """根据时间窗口过滤数据"""
+    if time_window == "全部历史" or df.empty:
+        return df
+    
+    window_map = {
+        "1年": 365,
+        "3年": 3 * 365,
+        "5年": 5 * 365,
+        "10年": 10 * 365
+    }
+    
+    if time_window in window_map:
+        cutoff_date = datetime.now() - timedelta(days=window_map[time_window])
+        # 确保日期列是 datetime 类型
+        if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+            df[date_col] = pd.to_datetime(df[date_col])
+        return df[df[date_col] >= cutoff_date]
+    
+    return df
+
+
+def _add_report_date_vlines(fig: go.Figure, records: list, df_date_range: pd.DataFrame, date_col: str = 'date'):
+    """在图表中添加财报发布日垂直虚线"""
+    if not records or df_date_range.empty:
+        return
+    
+    # 获取图表的日期范围
+    min_date = df_date_range[date_col].min()
+    max_date = df_date_range[date_col].max()
+    
+    for r in records:
+        report_date_str = r.get('report_date', '')
+        if not report_date_str:
+            continue
+        
+        report_date = pd.to_datetime(report_date_str)
+        
+        # 只添加在图表日期范围内的标线
+        if min_date <= report_date <= max_date:
+            year = r.get('year', '')
+            period = r.get('period', '')
+            label = f"{year} {period}" if year and period else ""
+            
+            fig.add_vline(
+                x=report_date,
+                line_dash="dash",
+                line_color="rgba(128, 128, 128, 0.4)",
+                annotation_text=label,
+                annotation_position="top",
+                annotation_font_size=8,
+                annotation_font_color="gray"
+            )
+
 
 def render_entry_tab(selected_company, unit_label):
     st.subheader(f"📝 {selected_company} - 财务数据录入 (SQLite 版)")
@@ -27,62 +83,108 @@ def render_entry_tab(selected_company, unit_label):
 
         # 展示已录入的市场数据详情
         df_market = get_market_history(selected_company)
+        
+        # 获取财报记录（用于添加垂直虚线）
+        financial_records = get_financial_records(selected_company)
+        
         if not df_market.empty:
             st.markdown("#### 📊 已录入市场数据概览")
-            latest = df_market.iloc[-1]
-            earliest = df_market.iloc[0]
             
-            # 数据统计
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("数据条数", f"{len(df_market)}")
+            # 确保日期列是 datetime 类型
+            if not pd.api.types.is_datetime64_any_dtype(df_market['date']):
+                df_market['date'] = pd.to_datetime(df_market['date'])
             
-            # Safe date formatting
-            try:
-                if not pd.api.types.is_datetime64_any_dtype(df_market['date']):
-                    df_market['date'] = pd.to_datetime(df_market['date'])
-                earliest_date = earliest['date'].strftime('%Y-%m')
-                latest_date = latest['date'].strftime('%Y-%m')
-                m2.metric("时间跨度", f"{earliest_date} ~ {latest_date}")
-            except:
-                m2.metric("时间跨度", "N/A")
+            # --- 需求2: 时间窗口选择 ---
+            time_window = st.selectbox(
+                "📅 选择时间窗口",
+                ["1年", "3年", "5年", "10年", "全部历史"],
+                index=4,  # 默认全部历史
+                key="market_time_window"
+            )
             
-            m3.metric("最新股价", f"{latest['close']:.2f}")
+            # 过滤数据
+            df_filtered = _filter_by_time_window(df_market.copy(), time_window)
             
-            # Safe PE formatting
-            pe_value = latest.get('pe_ttm', None)
-            if pe_value is not None and not pd.isna(pe_value):
-                m4.metric("最新 PE (TTM)", f"{pe_value:.2f}")
+            if df_filtered.empty:
+                st.warning(f"所选时间窗口 ({time_window}) 内无数据")
             else:
-                m4.metric("最新 PE (TTM)", "N/A")
-            
-            # 图表化展示
-            tab_chart1, tab_chart2, tab_chart3 = st.tabs(["📉 股价历史", "📊 PE Band / TTM", "📈 市值趋势"])
-            
-            with tab_chart1:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_market['date'], y=df_market['close'], name='Close'))
-                fig.update_layout(title="历史股价 (Close)", height=300, margin=dict(l=0,r=0,t=30,b=0))
-                st.plotly_chart(fig, use_container_width=True)
+                latest = df_filtered.iloc[-1]
+                earliest = df_filtered.iloc[0]
                 
-            with tab_chart2:
-                # 只有当 PE 数据存在时才展示
-                df_pe = df_market.dropna(subset=['pe_ttm'])
-                if not df_pe.empty:
-                    fig_pe = go.Figure()
-                    fig_pe.add_trace(go.Scatter(x=df_pe['date'], y=df_pe['pe_ttm'], name='PE TTM', line=dict(color='orange')))
-                    fig_pe.update_layout(title="PE Ratio (TTM) 历史走势", height=300, margin=dict(l=0,r=0,t=30,b=0))
-                    st.plotly_chart(fig_pe, use_container_width=True)
+                # 数据统计
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("数据条数", f"{len(df_filtered)}")
+                
+                try:
+                    earliest_date = earliest['date'].strftime('%Y-%m')
+                    latest_date = latest['date'].strftime('%Y-%m')
+                    m2.metric("时间跨度", f"{earliest_date} ~ {latest_date}")
+                except:
+                    m2.metric("时间跨度", "N/A")
+                
+                m3.metric("最新股价", f"{latest['close']:.2f}")
+                
+                # Safe PE formatting
+                pe_value = latest.get('pe_ttm', None)
+                if pe_value is not None and not pd.isna(pe_value):
+                    m4.metric("最新 PE (TTM)", f"{pe_value:.2f}")
                 else:
-                    st.caption("暂无 PE 数据 (需先录入财报以计算 EPS)")
-            
-            with tab_chart3:
-                 if 'market_cap' in df_market.columns and df_market['market_cap'].notna().any():
-                    fig_mc = go.Figure()
-                    fig_mc.add_trace(go.Scatter(x=df_market['date'], y=df_market['market_cap']/1e9, name='Market Cap (B)'))
-                    fig_mc.update_layout(title="市值历史 (Billion)", height=300, margin=dict(l=0,r=0,t=30,b=0))
-                    st.plotly_chart(fig_mc, use_container_width=True)
+                    m4.metric("最新 PE (TTM)", "N/A")
+                
+                # 图表化展示
+                tab_chart1, tab_chart2, tab_chart3 = st.tabs(["📉 股价历史", "📊 PE Band / TTM", "📈 市值趋势"])
+                
+                with tab_chart1:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=df_filtered['date'], y=df_filtered['close'], name='Close'))
+                    
+                    # 需求3: 添加财报发布日垂直虚线
+                    _add_report_date_vlines(fig, financial_records, df_filtered)
+                    
+                    fig.update_layout(
+                        title="历史股价 (Close) - 虚线标记财报发布日", 
+                        height=300, 
+                        margin=dict(l=0, r=0, t=30, b=0)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                with tab_chart2:
+                    # 只有当 PE 数据存在时才展示
+                    df_pe = df_filtered.dropna(subset=['pe_ttm'])
+                    if not df_pe.empty:
+                        fig_pe = go.Figure()
+                        fig_pe.add_trace(go.Scatter(x=df_pe['date'], y=df_pe['pe_ttm'], name='PE TTM', line=dict(color='orange')))
+                        
+                        # 需求3: 添加财报发布日垂直虚线
+                        _add_report_date_vlines(fig_pe, financial_records, df_pe)
+                        
+                        fig_pe.update_layout(
+                            title="PE Ratio (TTM) 历史走势 - 虚线标记财报发布日", 
+                            height=300, 
+                            margin=dict(l=0, r=0, t=30, b=0)
+                        )
+                        st.plotly_chart(fig_pe, use_container_width=True)
+                    else:
+                        st.caption("暂无 PE 数据 (需先录入财报以计算 EPS)")
+                
+                with tab_chart3:
+                    if 'market_cap' in df_filtered.columns and df_filtered['market_cap'].notna().any():
+                        fig_mc = go.Figure()
+                        fig_mc.add_trace(go.Scatter(x=df_filtered['date'], y=df_filtered['market_cap']/1e9, name='Market Cap (B)'))
+                        
+                        # 需求3: 添加财报发布日垂直虚线
+                        _add_report_date_vlines(fig_mc, financial_records, df_filtered)
+                        
+                        fig_mc.update_layout(
+                            title="市值历史 (Billion) - 虚线标记财报发布日", 
+                            height=300, 
+                            margin=dict(l=0, r=0, t=30, b=0)
+                        )
+                        st.plotly_chart(fig_mc, use_container_width=True)
+                    else:
+                        st.caption("暂无市值数据")
         else:
-            st.warning("暂无市场数据，请点击右上角‘同步’按钮获取 (需科学上网)")
+            st.warning("暂无市场数据，请点击右上角'同步'按钮获取 (需科学上网)")
 
     st.markdown("---")
 

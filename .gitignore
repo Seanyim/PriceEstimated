@@ -8,12 +8,13 @@ __pycache__/
 # VS Code
 .vscode/
 
-# Data (如有本地数据)
-data/*.csv
-data/*.xlsx
-data/*.json
-data/*.db
-data/*.sqlite3
-data/*.h5
-data/*.ckpt
-data/*.pt
+
+# # Data (如有本地数据)
+# data/*.csv
+# data/*.xlsx
+# data/*.json
+# data/*.db
+# data/*.sqlite3
+# data/*.h5
+# data/*.ckpt
+# data/*.pt
