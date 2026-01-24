@@ -1,7 +1,7 @@
 # PriceEstimated 📈
 
 [English] | [简体中文](./README/README_ZH.md) | [日本語](./README/README_JA.md)
-
+[Update logs](./README/updates.md)
 Integration of Strong Stock Analysis Models for quantitative price estimation and financial data processing.
 
 ---
@@ -30,3 +30,4 @@ PriceEstimated is a Python-based quantitative analysis framework designed to int
 To execute the primary analysis and generate price estimates:
 ```bash
 python main.py
+```

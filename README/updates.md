@@ -57,3 +57,10 @@
 - 'fetch' allows fetch data from yfinance 
 - 'fetch' uses qslite as databases
 
+
+## 2026/1/24
+### update 
+- revise stock price fetch from yfinance
+- fix bugs 
+- allow diverse financial data manually. 
+

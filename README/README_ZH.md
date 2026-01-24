@@ -1,7 +1,7 @@
 # PriceEstimated 📈
 
 [English](./README.md) | [简体中文] | [日本語](./README/README_JA.md)
-
+[更新日志](./README/updates.md)
 集成强力股票分析模型，实现精准的价格估算与财务数据处理。
 
 ---
@@ -30,3 +30,4 @@ PriceEstimated 是一个基于 Python 的量化分析框架，旨在集成多种
 运行主分析引擎并生成价格预测：
 ```bash
 python main.py
+```

@@ -1,7 +1,7 @@
 # PriceEstimated 📈
 
 [English](./README.md) | [简体中文](./README/README_ZH.md) | [日本語]
-
+[更新ログ](./README/updates.md)
 精密な価格推定と財務データ処理のための強力な株式分析モデルの統合ツール。
 
 ---
@@ -30,3 +30,4 @@ PriceEstimatedは、複数の株式評価モデルを統合するために設計
 主要な分析を実行し、価格推定を生成するには：
 ```bash
 python main.py
+```
