@@ -1,33 +1,43 @@
-# PriceEstimated 📈
+# PriceEstimated 📈 
 
-[English](./README.md) | [简体中文] | [日本語](./README/README_JA.md)
-[更新日志](./README/updates.md)
-集成强力股票分析模型，实现精准的价格估算与财务数据处理。
+[English](../README.md) | [简体中文] | 
+
+**高效率量化投资估值工作站**
+
+PriceEstimated 是一个基于 Python 的专业级财务分析工具。它实现了市场数据抓取、财务报表标准化以及严谨估值模型（PE Band 与 DCF）的自动化流转，旨在通过数据驱动发现投资价值。
 
 ---
 
-## 项目简介
-PriceEstimated 是一个基于 Python 的量化分析框架，旨在集成多种股票估值模型。它简化了从原始财务数据获取到最终价格预测的流程，通过模块化设计和严谨的计算确保高精度。
+## 🎯 核心功能
 
-## 核心功能
-* **多模型集成**: 将多种估值方法（如 DCF、相对估值法等）整合到统一界面中。
-* **数据管理**: 通过 `data_manager.py` 自动处理 `financial_data.json` 和本地 CSV 数据集。
-* **高可配置性**: 通过 `config.md` 轻松管理超参数和模型权重。
-* **自动化工作流**: 内置 GitHub Actions 用于持续集成和单元测试。
+* **🧩 累计转单季 (SQ)**: 内置复杂逻辑，自动将财报中的累计值（如 H1, Q1-Q3）转换为独立的单季度数据，确保趋势分析的准确性。
+* **📊 双重估值体系**:
+    * **PE Band (市盈率带)**: 基于历史 PE 分位点与前瞻 PE (Forward PE) 进行统计学估值。
+    * **DCF (现金流折现)**: 通过自动化 WACC (加权平均资本成本) 计算推导内在价值。
+* **⚡ 智能数据补全**: 调用 `yfinance` 自动回填历史财报披露日的市值与收盘价，告别繁琐的手工录入。
+* **📈 交互式可视化**: 使用 Plotly 构建动态 PE Band 曲线和财务趋势图表。
+* **🗄️ 本地数据库**: 基于 SQLite 的高性能后端，持久化存储标准化后的财务记录。
 
-## 安装指南
-1.  **克隆仓库**:
-    ```bash
-    git clone [https://github.com/Seanyim/PriceEstimated.git](https://github.com/Seanyim/PriceEstimated.git)
-    cd PriceEstimated
-    ```
-2.  **配置环境**:
-    ```bash
-    pip install -r requirements.txt
-    ```
+## 🛠️ 技术栈
 
-## 使用说明
-运行主分析引擎并生成价格预测：
-```bash
-python main.py
-```
+* **界面框架**: [Streamlit](https://streamlit.io/)
+* **数据引擎**: [Pandas](https://pandas.pydata.org/), [SQLite](https://www.sqlite.org/)
+* **金融接口**: [yfinance](https://github.com/ranarousset/yfinance)
+* **可视化**: [Plotly](https://plotly.com/python/)
+
+## 📊 量化逻辑
+
+核心估值基于内在价值 ($V$) 公式：
+
+$$V = \sum_{t=1}^{n} \frac{CF_t}{(1 + r)^t} + \frac{TV}{(1 + r)^n}$$
+
+其中 $CF_t$ 为自由现金流，$r$ 为计算得出的 WACC，$TV$ 为终值。
+
+## 🚀 快速开始
+
+1. **克隆与安装**:
+   ```bash
+   git clone [https://github.com/Seanyim/PriceEstimated.git](https://github.com/Seanyim/PriceEstimated.git)
+   cd PriceEstimated
+   pip install -r requirements.txt
+   ```
