@@ -18,7 +18,7 @@ pip install -r requirements.txt
 #### git
 
 git clone <your-repo-url>
-cd PriceEstimated
+cd Stock-Ward
 
 git status
 git branch
