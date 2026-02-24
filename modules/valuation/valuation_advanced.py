@@ -50,7 +50,7 @@ def render_advanced_valuation_tab(df_raw, unit_label, wacc, rf):
     ])
     
     with sub_tabs[0]:
-        _render_dcf_reverse(df_single, latest, meta, wacc, rf, unit_label)
+        _render_dcf_reverse(df_single, latest, meta, wacc, rf, unit_label, df_raw)
     
     with sub_tabs[1]:
         _render_peg_analysis(df_single, latest, meta, unit_label)
@@ -68,183 +68,187 @@ def render_advanced_valuation_tab(df_raw, unit_label, wacc, rf):
         _render_profitability_analysis(df_single, unit_label)
 
 
-def _render_dcf_reverse(df_single, latest, meta, wacc, rf, unit_label):
-    """DCF 倒推 - 从股价反推隐含增长率"""
-    st.markdown("#### 🔄 DCF 倒推分析")
-    st.caption("从当前股价反推市场隐含的增长率预期")
+def _render_dcf_reverse(df_single, latest, meta, wacc, rf, unit_label, df_raw=None):
+    """DCF 倒推 - 从当前市值倒推市场隐含增长率 (v2.1)"""
+    st.markdown("#### 🔄 DCF 倒推分析 (Reverse DCF)")
+    st.caption("基于当前市值，倒推市场对未来5年的隐含增长率预期。")
     
-    # 获取当前市值
     market_cap = meta.get('last_market_cap', 0)
-    
-    # 尝试多种 FCF 数据源
-    fcf = safe_get(latest, 'FreeCashFlow_TTM', 0)
-    fcf_source = "FreeCashFlow_TTM"
-    
-    # 备选：使用 FreeCashFlow（非TTM）
-    if fcf == 0:
-        fcf = safe_get(latest, 'FreeCashFlow', 0)
-        fcf_source = "FreeCashFlow"
-    
-    # 备选：使用经营现金流 - 资本支出
-    if fcf == 0:
-        ocf = safe_get(latest, 'OperatingCashFlow_TTM', 0)
-        if ocf == 0:
-            ocf = safe_get(latest, 'OperatingCashFlow', 0)
-        capex = abs(safe_get(latest, 'CapEx', 0))  # CapEx 通常为负
-        if ocf > 0:
-            fcf = ocf - capex
-            fcf_source = "OCF - CapEx"
-    
     if market_cap == 0:
-        st.warning("⚠️ 需要市值数据，请先同步市场数据")
+        st.warning("⚠️ 缺少市值数据，无法进行倒推")
         return
+
+    # --- FCF 基准选择 (与 DCF 模块对齐) ---
+    base_fcf = 0
+    fcf_source = "Unknown"
     
-    if fcf == 0:
-        st.warning("⚠️ 需要 FCF 数据")
-        st.info("💡 尝试的数据源：FreeCashFlow_TTM, FreeCashFlow, OCF-CapEx 均无有效数据")
-        # 显示可用的现金流字段
-        cf_cols = [c for c in latest.index if 'CashFlow' in c or 'FCF' in c or 'CapEx' in c]
-        if cf_cols:
-            st.caption(f"可用现金流字段：{cf_cols}")
-        return
+    # 获取需要的数据
+    val_ttm = latest.get('FreeCashFlow_TTM', 0)
     
-    # === 单位转换 ===
-    # 财务数据单位：十亿美元 (B)
-    # 市值单位：美元
-    # 需要将财务数据转换为美元
-    if fcf < 10000:  # 如果 FCF < 10000，说明是以十亿美元为单位
-        fcf_dollars = fcf * 1e9
-        unit_note = "(数据已从 B 转换为 $)"
+    # 尝试找最新 FY
+    df_fy = pd.DataFrame()
+    latest_fy_year = 0
+    if df_raw is not None and not df_raw.empty:
+        df_fy = df_raw[df_raw['period'] == 'FY'].sort_values('year')
+        latest_fy_year = df_fy.iloc[-1]['year'] if not df_fy.empty else 0
+    
+    val_fy = df_fy.iloc[-1].get('FreeCashFlow', 0) if not df_fy.empty else 0
+    
+    # 补全逻辑
+    if val_ttm == 0:
+        o = latest.get('OperatingCashFlow_TTM', 0)
+        c = abs(latest.get('CapEx', 0))
+        if o != 0: val_ttm = o - c
+        
+    if val_fy == 0 and not df_fy.empty:
+        o = df_fy.iloc[-1].get('OperatingCashFlow', 0)
+        c = abs(df_fy.iloc[-1].get('CapEx', 0))
+        if o != 0: val_fy = o - c
+
+    # 判断是否使用 TTM
+    use_ttm = True
+    if df_raw is not None:
+        last_record_year = latest.get('year', 0)
+        # 如果季度数据比FY新，倾向于TTM
+        if last_record_year > latest_fy_year and val_ttm != 0:
+            use_ttm = True
+        elif val_fy != 0:
+            use_ttm = False
+            
+    if use_ttm and val_ttm != 0:
+        base_fcf = val_ttm
+        fcf_source = "FCF TTM"
+    elif val_fy != 0:
+        base_fcf = val_fy
+        fcf_source = f"FCF FY{latest_fy_year}"
     else:
-        fcf_dollars = fcf
-        unit_note = ""
+        base_fcf = val_ttm # Final fallback
     
-    st.info(f"📊 当前市值: {market_cap/1e9:.2f}B | FCF: {fcf:.2f}B ({fcf_source}) {unit_note} | WACC: {wacc:.2%}")
+    if base_fcf == 0:
+        st.warning("⚠️ 需要 FCF 数据")
+        return
+        
+    # 展示核心参数
+    c1, c2, c3 = st.columns(3)
+    c1.metric("当前市值", f"{market_cap/1e9:.2f}B")
+    c2.metric(f"基准 FCF ({fcf_source})", f"{base_fcf:,.2f} {unit_label}")
+    c3.metric("WACC", f"{wacc:.1%}")
     
-    # 倒推隐含增长率
-    perp_rate = st.slider("永续增长率 (%)", 1.0, 4.0, 2.5) / 100
+    # 输入: 永续增长率 (v2.1 改为 unrestricted number input)
+    perp_rate_input = st.number_input(
+        "永续增长率假设 (%)", 
+        value=2.50,
+        step=0.01,
+        format="%.2f",
+        key="adv_dcf_perp_growth",
+        help="支持任意数值手动输入"
+    )
+    perp_rate = perp_rate_input / 100
     
-    # 使用二分法求解隐含增长率
-    def calc_ev(growth_rate):
-        """计算给定增长率下的企业价值（使用转换后的美元单位）"""
-        curr = fcf_dollars  # 使用转换后的美元单位
+    if wacc <= perp_rate:
+        st.error(f"❌ WACC ({wacc:.1%}) 必须大于永续增长率")
+        return
+
+    # --- 倒推计算 ---
+    # Goal: Find g such that DCF(g) = Market Cap
+    # DCF = Sum(FCF_i / (1+w)^i) + TV / (1+w)^5
+    
+    fcf_dollars = base_fcf * 1e9 if base_fcf < 10000 else base_fcf
+    
+    def calculate_ev(g):
         total_pv = 0
+        curr = fcf_dollars
         for i in range(1, 6):
-            curr = curr * (1 + growth_rate)
-            pv = curr / ((1 + wacc) ** i)
-            total_pv += pv
+            curr = curr * (1 + g)
+            total_pv += curr / ((1 + wacc) ** i)
+        
+        # Terminal
         term_val = curr * (1 + perp_rate) / (wacc - perp_rate)
         term_pv = term_val / ((1 + wacc) ** 5)
         return total_pv + term_pv
+
+    # 二分查找
+    low = -0.5
+    high = 1.0 # 100% Growth
+    implied_g = None
     
-    # 二分法求解
-    low, high = -0.2, 0.5
-    implied_growth = 0
-    
-    for _ in range(50):
+    for _ in range(100):
         mid = (low + high) / 2
-        ev = calc_ev(mid)
-        if abs(ev - market_cap) < market_cap * 0.001:
-            implied_growth = mid
+        ev = calculate_ev(mid)
+        if abs(ev - market_cap) < market_cap * 0.0001:
+            implied_g = mid
             break
         if ev < market_cap:
             low = mid
         else:
             high = mid
-        implied_growth = mid
+            
+    implied_g = (low + high) / 2
     
-    # 显示结果
-    col1, col2, col3 = st.columns(3)
-    col1.metric("隐含增长率", f"{implied_growth:.1%}")
-    col2.metric("隐含 FCF (Y5)", f"{fcf_dollars * (1 + implied_growth)**5 / 1e9:.2f}B")
-    col3.metric("验证 EV", f"{calc_ev(implied_growth) / 1e9:.2f}B")
+    st.divider()
     
-    # === DCF 计算过程展示 ===
-    with st.expander("📐 DCF 计算过程"):
-        st.markdown("**输入参数：**")
-        st.markdown(f"""
-| 参数 | 值 |
-|------|------|
-| 当前 FCF | {fcf:.2f}B |
-| WACC | {wacc:.2%} |
-| 永续增长率 | {perp_rate:.2%} |
-| 隐含增长率 | {implied_growth:.1%} |
-        """)
-        
-        st.markdown("**5年现金流预测：**")
-        fcf_projections = []
-        curr_fcf = fcf_dollars
-        for i in range(1, 6):
-            curr_fcf = curr_fcf * (1 + implied_growth)
-            pv = curr_fcf / ((1 + wacc) ** i)
-            fcf_projections.append({
-                "年份": f"Y{i}",
-                "FCF (B)": f"{curr_fcf/1e9:.2f}",
-                "PV (B)": f"{pv/1e9:.2f}"
-            })
-        
-        st.dataframe(pd.DataFrame(fcf_projections), use_container_width=True)
-        
-        # 终值计算
-        term_val = curr_fcf * (1 + perp_rate) / (wacc - perp_rate)
-        term_pv = term_val / ((1 + wacc) ** 5)
-        total_pv = sum([fcf_dollars * (1 + implied_growth)**i / ((1 + wacc)**i) for i in range(1, 6)])
-        
-        st.markdown(f"""
-**终值计算：**
-- 终值 = FCF₅ × (1 + g) / (WACC - g) = {curr_fcf/1e9:.2f} × (1 + {perp_rate:.2%}) / ({wacc:.2%} - {perp_rate:.2%}) = **{term_val/1e9:.2f}B**
-- 终值现值 = {term_val/1e9:.2f} / (1 + {wacc:.2%})⁵ = **{term_pv/1e9:.2f}B**
-
-**企业价值：**
-- 5年现金流 PV = {total_pv/1e9:.2f}B
-- 终值 PV = {term_pv/1e9:.2f}B
-- **总计 EV = {(total_pv + term_pv)/1e9:.2f}B**
-        """)
+    # 结果展示
+    st.markdown(f"#### 💡 市场隐含增长率: **{implied_g:.1%}**")
+    st.caption(f"即：为支撑当前 {market_cap/1e9:.1f}B 市值，市场预期未来 5 年 FCF 需保持 {implied_g:.1%} 的复合增长。")
+    
+    # FCF 拆解展示
+    st.markdown("**📅 隐含 FCF 路径分解**")
+    
+    proj_data = []
+    curr = fcf_dollars
+    for i in range(1, 6):
+        prev = curr
+        curr = curr * (1 + implied_g)
+        change = curr - prev
+        proj_data.append({
+            "年份": f"Y{i}",
+            f"FCF 预测 ({unit_label})": f"{curr/1e9:.2f}B" if base_fcf < 10000 else f"{curr:.2f}",
+            "YoY": f"{implied_g:.1%}",
+            "折现因子": f"{1/((1+wacc)**i):.3f}"
+        })
+    
+    st.dataframe(pd.DataFrame(proj_data), use_container_width=True, hide_index=True)
     
     # 敏感性分析
-    st.markdown("**敏感性分析**")
-    growth_rates = np.arange(-0.1, 0.31, 0.05)
-    evs = [calc_ev(g) / 1e9 for g in growth_rates]
+    st.markdown("**🎯 敏感性分析: WACC vs 永续增长率 → 隐含增长率**")
     
-    fig = go.Figure()
+    wacc_opts = [wacc-0.01, wacc-0.005, wacc, wacc+0.005, wacc+0.01]
+    perp_opts = [perp_rate-0.01, perp_rate-0.005, perp_rate, perp_rate+0.005, perp_rate+0.01]
     
-    # 1. 估值曲线
-    fig.add_trace(go.Scatter(
-        x=[f"{g:.0%}" for g in growth_rates],
-        y=evs,
-        mode='lines+markers',
-        name='企业价值 (预测)',
-        line=dict(color='#3B82F6', width=3),
-        marker=dict(size=6)
+    mtx = []
+    for p in perp_opts:
+        row = []
+        for w in wacc_opts:
+            if w <= p:
+                row.append(None)
+                continue
+            # Solve for g
+            l, h = -0.5, 1.0
+            for _ in range(20):
+                m = (l+h)/2
+                # calc EV with this w, p, m
+                c = fcf_dollars
+                tp = 0
+                for i in range(1,6):
+                    c *= (1+m)
+                    tp += c/((1+w)**i)
+                tv = c*(1+p)/(w-p)
+                tp += tv/((1+w)**5)
+                if tp < market_cap: l = m
+                else: h = m
+            row.append((l+h)/2 * 100)
+        mtx.append(row)
+        
+    fig = go.Figure(data=go.Heatmap(
+        z=mtx,
+        x=[f"WACC {w:.1%}" for w in wacc_opts],
+        y=[f"g_perp {p:.1%}" for p in perp_opts],
+        colorscale='RdYlGn',
+        texttemplate="%{z:.1f}%",
+        colorbar=dict(title="隐含5年增长率(%)")
     ))
-    
-    # 2. 当前市值线
-    fig.add_hline(y=market_cap/1e9, line_dash="dash", line_color="#EF4444",
-                  annotation_text=f"当前市值 {market_cap/1e9:.1f}B", 
-                  annotation_position="bottom right")
-
-    # 3. 隐含增长率标记点
-    if -0.1 <= implied_growth <= 0.3:
-        fig.add_trace(go.Scatter(
-            x=[f"{implied_growth:.1%}"], 
-            y=[market_cap/1e9],
-            mode='markers',
-            name=f'隐含增长率 {implied_growth:.1%}',
-            marker=dict(color='#EF4444', size=12, symbol='star'),
-            text=[f"隐含点: {implied_growth:.1%}"],
-            textposition="top center"
-        ))
-
-    fig.update_layout(
-        title="DCF 倒推: 增长率 vs 企业价值",
-        xaxis_title="永续/长期增长率假设",
-        yaxis_title="企业价值 (Billion USD)",
-        height=350,
-        legend=dict(orientation="h", y=1.1),
-        hovermode="x unified"
-    )
+    fig.update_layout(height=350, title="敏感性矩阵")
     st.plotly_chart(fig, use_container_width=True)
-
 
 def _render_peg_analysis(df_single, latest, meta, unit_label):
     """PEG 倒推分析"""
@@ -423,6 +427,59 @@ Fisher PEG = PE / (G + 2×rf) = {current_pe:.2f} / ({growth_pct:.2f} + 2×{rf_pc
         st.success(f"✅ 市场隐含增长率 ({implied_growth_fisher:.1f}%) < 实际/预期增长率 ({growth_pct:.1f}%)，意味着当前价格未充分计入增长预期 (低估)")
     else:
         st.warning(f"⚠️ 市场隐含增长率 ({implied_growth_fisher:.1f}%) > 实际/预期增长率 ({growth_pct:.1f}%)，意味着当前价格透支了过高的增长预期 (高估)")
+    
+    # v2.1: PE/PEG 敏感性分析热力图
+    st.markdown("#### 🎯 PE/PEG 敏感性分析: 增长率 vs 目标PEG → 合理股价")
+    
+    growth_sens = [max(5, growth_pct - 10), max(5, growth_pct - 5), growth_pct, growth_pct + 5, growth_pct + 10]
+    peg_sens = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    
+    price_matrix = []
+    upside_matrix = []
+    for g in growth_sens:
+        prices_row = []
+        upside_row = []
+        for p in peg_sens:
+            fp = p * g * eps_ttm
+            prices_row.append(fp)
+            up = (fp / current_price - 1) * 100 if current_price > 0 else 0
+            upside_row.append(up)
+        price_matrix.append(prices_row)
+        upside_matrix.append(upside_row)
+    
+    # 合理股价热力图
+    fig_peg_sense = go.Figure(data=go.Heatmap(
+        z=price_matrix,
+        x=[f"PEG={p}" for p in peg_sens],
+        y=[f"G={g:.0f}%" for g in growth_sens],
+        colorscale='RdYlGn',
+        texttemplate="$%{z:.0f}",
+        colorbar=dict(title="合理股价 ($)")
+    ))
+    fig_peg_sense.update_layout(
+        title=f"敏感性: 增长率/PEG → 合理股价 (当前 ${current_price:.0f})",
+        xaxis_title="目标 PEG", yaxis_title="增长率 (%)", height=350
+    )
+    st.plotly_chart(fig_peg_sense, use_container_width=True)
+    
+    # 涨跌幅热力图
+    fig_upside = go.Figure(data=go.Heatmap(
+        z=upside_matrix,
+        x=[f"PEG={p}" for p in peg_sens],
+        y=[f"G={g:.0f}%" for g in growth_sens],
+        colorscale='RdYlGn', zmid=0,
+        texttemplate="%{z:+.0f}%",
+        colorbar=dict(title="潜在涨跌幅 (%)")
+    ))
+    fig_upside.update_layout(
+        title=f"敏感性: 增长率/PEG → 潜在涨跌幅 (vs 当前 ${current_price:.0f})",
+        xaxis_title="目标 PEG", yaxis_title="增长率 (%)", height=350
+    )
+    st.plotly_chart(fig_upside, use_container_width=True)
+    
+    # 结论摘要
+    all_ups = [v for row in upside_matrix for v in row]
+    st.info(f"📊 **敏感性结论**: 合理股价区间 **${min(p for row in price_matrix for p in row):.0f} ~ ${max(p for row in price_matrix for p in row):.0f}**，涨跌幅区间 **{min(all_ups):+.0f}% ~ {max(all_ups):+.0f}%**")
 
 
 def _render_ev_ebitda(df_single, latest, meta, unit_label):
@@ -502,7 +559,53 @@ def _render_ev_ebitda(df_single, latest, meta, unit_label):
         legend=dict(orientation="h", y=-0.2)
     )
     st.plotly_chart(fig, use_container_width=True)
-
+    
+    # v2.1: 历史 EV/EBITDA 趋势
+    st.markdown("**📈 历史 EV/EBITDA 趋势**")
+    hist_data = []
+    for _, row in df_single.iterrows():
+        ebitda_val = safe_get(row, 'EBITDA_TTM', 0) or safe_get(row, 'OperatingProfit_TTM', 0) or safe_get(row, 'OperatingProfit', 0)
+        if ebitda_val > 0:
+            ebitda_d = ebitda_val * scale_input
+            hist_ev = market_cap + (safe_get(row, 'TotalDebt', 0) or safe_get(row, 'LongTermDebt', 0)) * scale_input - (safe_get(row, 'CashAndEquivalents', 0) or safe_get(row, 'CashEndOfPeriod', 0)) * scale_input
+            hist_data.append({"period": f"{row.get('year','')}{row.get('period','')}", "ev_ebitda": hist_ev / ebitda_d})
+    
+    if len(hist_data) >= 2:
+        df_hist = pd.DataFrame(hist_data)
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(x=df_hist['period'], y=df_hist['ev_ebitda'], mode='lines+markers', name='EV/EBITDA', line=dict(color='#3B82F6', width=2)))
+        fig_hist.add_hline(y=input_sector_median, line_dash="dash", line_color="gray", annotation_text=f"行业中位 {input_sector_median:.1f}x")
+        fig_hist.update_layout(title="EV/EBITDA 历史趋势", xaxis_title="期间", yaxis_title="EV/EBITDA (x)", height=300)
+        st.plotly_chart(fig_hist, use_container_width=True)
+    
+    # v2.1: 隐含合理市值计算
+    implied_mc = input_sector_median * ebitda_dollars - debt_dollars + cash_dollars
+    implied_diff = (implied_mc / market_cap - 1) * 100 if market_cap > 0 else 0
+    st.metric("隐含合理市值 (行业中位EV/EBITDA)", f"{implied_mc/1e9:.1f}B", f"{implied_diff:+.1f}% vs 当前市值")
+    
+    # v2.1: 敏感性分析
+    st.markdown("**🎯 敏感性: EV/EBITDA 倍数 vs EBITDA 变动 → 隐含市值 (B)**")
+    mult_range = [ev_ebitda*0.7, ev_ebitda*0.85, ev_ebitda, input_sector_median, ev_ebitda*1.15, ev_ebitda*1.3]
+    ebitda_chg = [-20, -10, 0, 10, 20]
+    
+    mc_matrix = []
+    for chg in ebitda_chg:
+        row_vals = []
+        for m in mult_range:
+            adj_ebitda = ebitda_dollars * (1 + chg/100)
+            implied = (m * adj_ebitda - debt_dollars + cash_dollars) / 1e9
+            row_vals.append(implied)
+        mc_matrix.append(row_vals)
+    
+    fig_s = go.Figure(data=go.Heatmap(
+        z=mc_matrix,
+        x=[f"{m:.1f}x" for m in mult_range],
+        y=[f"EBITDA {c:+d}%" for c in ebitda_chg],
+        colorscale='RdYlGn', texttemplate="%{z:.0f}B",
+        colorbar=dict(title="隐含市值(B)")
+    ))
+    fig_s.update_layout(title="EV/EBITDA 敏感性分析", xaxis_title="EV/EBITDA 倍数", yaxis_title="EBITDA 变动", height=350)
+    st.plotly_chart(fig_s, use_container_width=True)
 
 
 def _render_growth_analysis(df_single, unit_label):
@@ -636,7 +739,7 @@ def _render_growth_analysis(df_single, unit_label):
 
 
 def _render_monte_carlo(df_single, latest, meta, wacc, unit_label):
-    """Monte Carlo 模拟"""
+    """Monte Carlo 模拟 (v2.1 - 多指标选择)"""
     st.markdown("#### 🎲 Monte Carlo 模拟")
     st.caption("使用概率分布模拟估值区间")
     
@@ -648,7 +751,6 @@ def _render_monte_carlo(df_single, latest, meta, wacc, unit_label):
         st.warning("需要 FCF 数据")
         return
     
-    # 单位转换
     if fcf < 10000:
         fcf_dollars = fcf * 1e9
     else:
@@ -656,21 +758,32 @@ def _render_monte_carlo(df_single, latest, meta, wacc, unit_label):
     
     market_cap = meta.get('last_market_cap', 0)
     
+    # v2.1: 用户可选增长率指标
+    metric_options = {
+        "FCF 同比增长": "FreeCashFlow_TTM_YoY",
+        "营收同比增长": "TotalRevenue_TTM_YoY",
+        "EPS 同比增长": "EPS_TTM_YoY",
+        "OCF 同比增长": "OperatingCashFlow_TTM_YoY"
+    }
+    
+    selected_metric = st.selectbox("📊 选择增长率指标", list(metric_options.keys()), 
+                                    help="选择用于模拟的增长率数据源")
+    metric_col = metric_options[selected_metric]
+    
     # 自动计算历史增长率均值和标准差
     hist_growth_mean = 0.10
     hist_growth_std = 0.05
-    source_msg = "默认值"
+    source_msg = "默认值 (无足够历史数据)"
     
-    if 'FreeCashFlow_TTM_YoY' in df_single.columns:
-        growth_series = df_single['FreeCashFlow_TTM_YoY'].dropna()
-        # 剔除极端异动值 (超过 +/- 100%)
+    if metric_col in df_single.columns:
+        growth_series = df_single[metric_col].dropna()
         growth_series = growth_series[(growth_series > -0.5) & (growth_series < 1.0)]
         if len(growth_series) >= 4:
             hist_growth_mean = growth_series.mean()
             hist_growth_std = growth_series.std()
-            source_msg = f"基于历史 {len(growth_series)} 个季度的 FCF 同比数据计算 (Mean={hist_growth_mean:.1%}, Std={hist_growth_std:.1%})"
+            source_msg = f"✅ 基于 {len(growth_series)} 个季度 {selected_metric} 数据 (Mean={hist_growth_mean:.1%}, Std={hist_growth_std:.1%})"
     
-    st.info(f"💡 自动参数推断: {source_msg}")
+    st.info(f"💡 参数推断: {source_msg}")
     
     # 参数设置
     col1, col2, col3 = st.columns(3)
@@ -847,4 +960,57 @@ def _render_profitability_analysis(df_single, unit_label):
             
     fig2.update_layout(title="盈利能力历史趋势 (ROE vs ROIC)", yaxis_title="百分比 (%)", height=300, legend=dict(orientation="h", y=1.1))
     st.plotly_chart(fig2, use_container_width=True)
-
+    
+    # v2.1: ROIC vs WACC 价值创造分析
+    st.markdown("##### 💎 价值创造能力 (ROIC vs WACC)")
+    
+    # 获取 WACC (从 session state)
+    wacc_pct = st.session_state.get('wacc', 0.10) * 100 if 'wacc' in st.session_state else 10.0
+    wacc_input = st.number_input("WACC (%)", value=float(wacc_pct), step=0.5, key="roic_wacc")
+    
+    spread = roic - wacc_input
+    
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("ROIC", f"{roic:.1f}%")
+    sc2.metric("WACC", f"{wacc_input:.1f}%")
+    sc3.metric("超额收益 (ROIC-WACC)", f"{spread:+.1f}%", "创造价值 ✅" if spread > 0 else "毁灭价值 ❌")
+    
+    if spread > 3:
+        st.success(f"🌟 **强价值创造**: ROIC 超过 WACC {spread:.1f}个百分点，公司每投入1元资本产生超越资本成本的回报。")
+    elif spread > 0:
+        st.info(f"✅ **正向价值创造**: ROIC 略高于 WACC {spread:.1f}个百分点，但需关注可持续性。")
+    else:
+        st.error(f"❌ **价值毁灭**: ROIC 低于 WACC {abs(spread):.1f}个百分点, 投入的资本回报低于资本成本。")
+    
+    # v2.1: 杠杆可持续性分析
+    st.markdown("##### ⚖️ 杠杆可持续性")
+    de_ratio = total_debt / total_equity if total_equity > 0 else 0
+    interest_exp = abs(safe_val(latest, 'InterestExpense_TTM') or safe_val(latest, 'InterestExpense') or 0)
+    op_income = safe_val(latest, 'OperatingProfit_TTM') or safe_val(latest, 'OperatingProfit') or 0
+    interest_coverage = op_income / interest_exp if interest_exp > 0 else float('inf')
+    
+    lc1, lc2, lc3 = st.columns(3)
+    lc1.metric("D/E 比率", f"{de_ratio:.2f}", "健康" if de_ratio < 1 else "偏高", delta_color="inverse")
+    lc2.metric("利息覆盖倍数", f"{interest_coverage:.1f}x" if interest_coverage < 100 else "N/A", "安全" if interest_coverage > 3 else "风险")
+    lc3.metric("权益乘数", f"{equity_multiplier:.2f}", "适度杠杆" if equity_multiplier < 3 else "高杠杆")
+    
+    if de_ratio > 1.5 and roe > ind_roe:
+        st.warning("⚠️ **注意**: 高 ROE 可能主要由高杠杆驱动（D/E > 1.5x），盈利质量需关注资产周转率和净利率趋势。")
+    
+    # v2.1: 估值弹性分析
+    st.markdown("##### 📊 估值弹性分析 (ROIC 变动 → 隐含价值变化)")
+    
+    roic_range = [roic*0.7, roic*0.85, roic, roic*1.15, roic*1.3]
+    if invested_capital > 0 and net_income > 0:
+        fig_elast = go.Figure()
+        implied_premiums = [(r - wacc_input) / wacc_input * 100 for r in roic_range]
+        fig_elast.add_trace(go.Bar(
+            x=[f"ROIC={r:.1f}%" for r in roic_range],
+            y=implied_premiums,
+            marker_color=['#EF4444' if p < 0 else '#10B981' for p in implied_premiums],
+            text=[f"{p:+.0f}%" for p in implied_premiums],
+            textposition='auto'
+        ))
+        fig_elast.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig_elast.update_layout(title="ROIC 变动 → 超额收益变化", xaxis_title="ROIC 情景", yaxis_title="超额收益/WACC (%)", height=300)
+        st.plotly_chart(fig_elast, use_container_width=True)

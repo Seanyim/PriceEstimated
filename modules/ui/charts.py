@@ -80,7 +80,15 @@ def render_charts_tab(df_raw, unit_label="Raw"):
 
     # 4. 构造 X 轴标签
     # 累计原始值保持 Q1/H1/Q9/FY 格式
-    plot_data = plot_data.sort_values(['year', 'period'], ascending=[True, True])
+    # 4. 构造 X 轴标签
+    # 累计原始值保持 Q1/H1/Q9/FY 格式
+    if view_mode == "cumulative":
+        # Custom sort for cumulative periods
+        period_map = {"Q1": 1, "H1": 2, "Q9": 3, "FY": 4}
+        plot_data['__sort_key'] = plot_data['period'].map(period_map).fillna(99)
+        plot_data = plot_data.sort_values(['year', '__sort_key'], ascending=[True, True])
+    else:
+        plot_data = plot_data.sort_values(['year', 'period'], ascending=[True, True])
     plot_data['x_label'] = plot_data['year'].astype(str) + "/" + plot_data['period']
     
     x = plot_data['x_label']

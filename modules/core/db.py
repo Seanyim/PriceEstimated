@@ -120,6 +120,45 @@ def init_db():
                         PRIMARY KEY (ticker, period)
                     )''')
         
+        # 7. 公司分组类别表 (v2.1)
+        c.execute('''CREATE TABLE IF NOT EXISTS company_categories (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        display_order INTEGER DEFAULT 0
+                    )''')
+        
+        # 8. 分组成员表 (v2.1)
+        c.execute('''CREATE TABLE IF NOT EXISTS category_members (
+                        category_id INTEGER,
+                        ticker TEXT,
+                        PRIMARY KEY (category_id, ticker),
+                        FOREIGN KEY (category_id) REFERENCES company_categories(id) ON DELETE CASCADE,
+                        FOREIGN KEY (ticker) REFERENCES companies(ticker) ON DELETE CASCADE
+                    )''')
+        
+        # 9. 自动创建基于 region 的默认分组（如果尚无任何分组）
+        c.execute("SELECT COUNT(*) FROM company_categories")
+        if c.fetchone()[0] == 0:
+            default_categories = [
+                ("🇺🇸 美股", 1), ("🇨🇳 沪深", 2), ("🇭🇰 港股", 3),
+                ("🇯🇵 日股", 4), ("🇹🇼 台股", 5)
+            ]
+            c.executemany("INSERT OR IGNORE INTO company_categories (name, display_order) VALUES (?, ?)",
+                          default_categories)
+            
+            # 将已有公司按 region 自动分组
+            region_to_category = {
+                "US": "🇺🇸 美股", "CN": "🇨🇳 沪深", "HK": "🇭🇰 港股",
+                "JP": "🇯🇵 日股", "TW": "🇹🇼 台股"
+            }
+            c.execute("SELECT ticker, region FROM companies")
+            for ticker_row in c.fetchall():
+                t, r = ticker_row
+                cat_name = region_to_category.get(r)
+                if cat_name:
+                    c.execute("""INSERT OR IGNORE INTO category_members (category_id, ticker)
+                                 SELECT id, ? FROM company_categories WHERE name = ?""", (t, cat_name))
+
         conn.commit()
     except Exception as e:
         st.error(f"DB Init Error: {e}")
@@ -411,3 +450,175 @@ def get_all_tickers():
     tickers = [row[0] for row in c.fetchall()]
     conn.close()
     return tickers
+
+
+# --- 公司分组管理 (v2.1) ---
+
+def get_all_categories():
+    """获取所有分组列表，按 display_order 排序"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, name, display_order FROM company_categories ORDER BY display_order ASC")
+    rows = c.fetchall()
+    conn.close()
+    return [{"id": r[0], "name": r[1], "display_order": r[2]} for r in rows]
+
+
+def get_categories_with_companies():
+    """获取所有分组及其包含的公司，返回结构化数据
+    Returns: [{"id": 1, "name": "美股", "companies": [{"ticker": "AAPL", "name": "Apple"}, ...]}]
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute("SELECT id, name FROM company_categories ORDER BY display_order ASC")
+    categories = c.fetchall()
+    
+    result = []
+    categorized_tickers = set()
+    
+    for cat_id, cat_name in categories:
+        c.execute("""SELECT cm.ticker, COALESCE(co.name, cm.ticker) as name
+                     FROM category_members cm
+                     LEFT JOIN companies co ON cm.ticker = co.ticker
+                     WHERE cm.category_id = ?
+                     ORDER BY cm.ticker""", (cat_id,))
+        members = c.fetchall()
+        companies = [{"ticker": m[0], "name": m[1]} for m in members]
+        for m in members:
+            categorized_tickers.add(m[0])
+        result.append({"id": cat_id, "name": cat_name, "companies": companies})
+    
+    # 未分组的公司
+    c.execute("SELECT ticker, COALESCE(name, ticker) FROM companies ORDER BY ticker")
+    all_companies = c.fetchall()
+    uncategorized = [{"ticker": t, "name": n} for t, n in all_companies if t not in categorized_tickers]
+    if uncategorized:
+        result.append({"id": -1, "name": "📋 未分组", "companies": uncategorized})
+    
+    conn.close()
+    return result
+
+
+def create_category(name):
+    """创建新分组"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COALESCE(MAX(display_order), 0) + 1 FROM company_categories")
+        next_order = c.fetchone()[0]
+        c.execute("INSERT INTO company_categories (name, display_order) VALUES (?, ?)", (name, next_order))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # 名称重复
+    finally:
+        conn.close()
+
+
+def delete_category(category_id):
+    """删除分组（不删除公司数据）"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("PRAGMA foreign_keys = ON")
+        c.execute("DELETE FROM category_members WHERE category_id = ?", (category_id,))
+        c.execute("DELETE FROM company_categories WHERE id = ?", (category_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Delete category error: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def rename_category(category_id, new_name):
+    """重命名分组"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE company_categories SET name = ? WHERE id = ?", (new_name, category_id))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # 名称重复
+    finally:
+        conn.close()
+
+
+def add_company_to_category(category_id, ticker):
+    """添加公司到分组"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT OR IGNORE INTO category_members (category_id, ticker) VALUES (?, ?)",
+                  (category_id, ticker))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Add to category error: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def remove_company_from_category(category_id, ticker):
+    """从分组中移除公司（不删除公司数据）"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM category_members WHERE category_id = ? AND ticker = ?",
+                  (category_id, ticker))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Remove from category error: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_company(ticker):
+    """从数据库完全删除公司及所有关联数据"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        # 删除所有关联数据
+        c.execute("DELETE FROM category_members WHERE ticker = ?", (ticker,))
+        c.execute("DELETE FROM financial_records WHERE ticker = ?", (ticker,))
+        c.execute("DELETE FROM market_daily WHERE ticker = ?", (ticker,))
+        c.execute("DELETE FROM analyst_price_targets WHERE ticker = ?", (ticker,))
+        c.execute("DELETE FROM analyst_estimates WHERE ticker = ?", (ticker,))
+        c.execute("DELETE FROM recommendation_trends WHERE ticker = ?", (ticker,))
+        c.execute("DELETE FROM companies WHERE ticker = ?", (ticker,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Delete company error: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def auto_assign_company_to_region_category(ticker, region):
+    """自动将新添加的公司分配到对应地区分组"""
+    region_to_category = {
+        "US": "🇺🇸 美股", "CN": "🇨🇳 沪深", "HK": "🇭🇰 港股",
+        "JP": "🇯🇵 日股", "TW": "🇹🇼 台股"
+    }
+    cat_name = region_to_category.get(region)
+    if not cat_name:
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id FROM company_categories WHERE name = ?", (cat_name,))
+        row = c.fetchone()
+        if row:
+            c.execute("INSERT OR IGNORE INTO category_members (category_id, ticker) VALUES (?, ?)",
+                      (row[0], ticker))
+            conn.commit()
+    finally:
+        conn.close()
