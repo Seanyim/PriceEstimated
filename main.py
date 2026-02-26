@@ -48,10 +48,11 @@ with st.sidebar.expander("➕ 添加/更新公司", expanded=False):
                 "TW": "🇹🇼 台湾"
             }.get(x, x)
         )
-        new_unit = st.selectbox("单位", ["Billion", "Million"])
+        # v2.2: 单位根据地区自动推断，无需手动选择
+        st.caption("💡 财务数据单位自动处理：导入时系统自动识别 亿/万/百万 并统一转换")
         if st.form_submit_button("添加/更新公司"):
             if new_ticker:
-                save_company_meta(new_ticker, new_name, new_unit, new_region)
+                save_company_meta(new_ticker, new_name, region=new_region)
                 # v2.2: 自动分配到对应地区分组
                 auto_assign_company_to_region_category(new_ticker, new_region)
                 st.success(f"已添加 {new_ticker} ({new_region})")

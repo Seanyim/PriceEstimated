@@ -319,8 +319,25 @@ def get_company_meta(ticker):
         return dict(zip(col_names, row))
     return {}
 
-def save_company_meta(ticker, name, unit, region='US'):
-    """保存公司元数据，支持地区字段"""
+def detect_unit_from_region(region: str) -> str:
+    """根据地区自动推断财务数据显示单位
+    
+    所有数据在数据库中统一以 Billion 存储。
+    此函数决定 UI 展示时使用的标签。
+    
+    Returns:
+        "Billion" — 美股/港股/日股/台股 (英文单位)
+        "Billion" — 中国A股 (数据已在导入时从亿/万转为Billion)
+    """
+    # v2.2: 所有地区统一使用 Billion 作为内部单位
+    # JSON 导入时 parse_value() 已自动将 亿/万/百万 转换为 Billion
+    return "Billion"
+
+
+def save_company_meta(ticker, name, unit=None, region='US'):
+    """保存公司元数据，unit 自动根据 region 推断（无需手动指定）"""
+    if unit is None:
+        unit = detect_unit_from_region(region)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""INSERT INTO companies (ticker, name, unit, region) VALUES (?, ?, ?, ?)

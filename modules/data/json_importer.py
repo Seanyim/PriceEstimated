@@ -206,11 +206,13 @@ METRIC_MAPPING = {
 def detect_data_unit(json_data: dict) -> str:
     """自动检测 JSON 数据中的单位
     
-    通过检查数据中是否包含"亿"或"万"来判断单位
+    通过检查数据中是否包含"亿"、"百万"或"万"来判断单位
+    注意：每个数值可能使用不同单位（如同一份报表中混合亿和万）
+    parse_value() 会对每个值独立进行转换
     
     Returns:
-        "Billion" (默认) - 需要转换的中文格式
-        "Raw" - 无需转换的原始数据
+        "ChineseUnit" - 包含中文单位（亿/万/百万），需要 parse_value 逐值转换
+        "Raw" - 无中文单位的原始数据
     """
     data = json_data.get("data", [])
     
@@ -218,7 +220,7 @@ def detect_data_unit(json_data: dict) -> str:
         values = item.get("values", [])
         for val in values[:5]:  # 只检查前5个值
             if val and isinstance(val, str):
-                if "亿" in val or "万" in val:
+                if "亿" in val or "百万" in val or "万" in val:
                     return "ChineseUnit"
     
     return "Raw"
@@ -263,8 +265,8 @@ def parse_value(value_str: str, data_unit: str = "ChineseUnit") -> Optional[floa
     if is_negative:
         value_str = value_str[1:]
     
-    # 尝试提取数字和单位
-    match = re.match(r'^([\d,\.]+)\s*(亿|万)?$', value_str)
+    # 尝试提取数字和单位（支持 亿/百万/万）
+    match = re.match(r'^([\d,\.]+)\s*(亿|百万|万)?$', value_str)
     
     if match:
         number_str = match.group(1).replace(",", "")
@@ -279,6 +281,9 @@ def parse_value(value_str: str, data_unit: str = "ChineseUnit") -> Optional[floa
         if unit == "亿":
             # 中文亿 = 1亿 = 0.1 Billion (1B = 10亿)
             number = number / 10
+        elif unit == "百万":
+            # 百万 = 1百万 = 0.001 Billion (1B = 1000百万)
+            number = number / 1000
         elif unit == "万":
             # 中文万 = 1万 = 0.00001 Billion
             number = number / 100000
