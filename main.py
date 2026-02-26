@@ -4,7 +4,8 @@ from modules.core.db import (
     init_db, get_all_tickers, save_company_meta, get_financial_records, get_company_meta,
     get_categories_with_companies, get_all_categories, create_category, delete_category,
     rename_category, add_company_to_category, remove_company_from_category,
-    delete_company, auto_assign_company_to_region_category
+    delete_company, auto_assign_company_to_region_category,
+    detect_region_from_ticker, get_companies_in_category, get_companies_not_in_category
 )
 from modules.ui.data_entry import render_entry_tab
 from modules.ui.charts import render_charts_tab
@@ -24,14 +25,21 @@ init_db()
 # --- 侧边栏 ---
 st.sidebar.header("🏢 公司管理")
 
-# 1. 新建公司 (v2.1 - 添加地区选择 + 自动分组)
+# 1. 新建公司 (v2.2 - 智能地区推断 + 自动分组)
 with st.sidebar.expander("➕ 添加/更新公司", expanded=False):
+    new_ticker = st.text_input("Ticker (e.g. AAPL, 600519.SS, 9988.HK)", key="add_ticker").upper()
+    
+    # v2.2: 根据 Ticker 后缀自动推断地区
+    auto_detected_region = detect_region_from_ticker(new_ticker) if new_ticker else 'US'
+    region_options = ["US", "CN", "HK", "JP", "TW"]
+    default_region_idx = region_options.index(auto_detected_region) if auto_detected_region in region_options else 0
+    
     with st.form("add_company"):
-        new_ticker = st.text_input("Ticker (e.g. AAPL)").upper()
         new_name = st.text_input("公司名称 (e.g. Apple)")
         new_region = st.selectbox(
             "地区/市场", 
-            ["US", "CN", "HK", "JP", "TW"],
+            region_options,
+            index=default_region_idx,
             format_func=lambda x: {
                 "US": "🇺🇸 美国",
                 "CN": "🇨🇳 中国大陆",
@@ -44,12 +52,12 @@ with st.sidebar.expander("➕ 添加/更新公司", expanded=False):
         if st.form_submit_button("添加/更新公司"):
             if new_ticker:
                 save_company_meta(new_ticker, new_name, new_unit, new_region)
-                # v2.1: 自动分配到对应地区分组
+                # v2.2: 自动分配到对应地区分组
                 auto_assign_company_to_region_category(new_ticker, new_region)
                 st.success(f"已添加 {new_ticker} ({new_region})")
                 st.rerun()
 
-# 2. 按分组选择公司 (v2.1)
+# 2. 按分组选择公司 (v2.2 - 两级联动：先选组，再选组内公司)
 categories_data = get_categories_with_companies()
 all_tickers = get_all_tickers()
 
@@ -57,24 +65,30 @@ if not all_tickers:
     st.info("请先添加公司")
     st.stop()
 
-# 构建分组化的选项列表
-grouped_options = []  # [(display_label, ticker), ...]
-for cat in categories_data:
-    if cat["companies"]:
-        for comp in cat["companies"]:
-            label = f"[{cat['name']}] {comp['ticker']} - {comp['name']}"
-            grouped_options.append((label, comp["ticker"]))
+# v2.2: 构建分组列表（只显示有公司的分组）
+available_categories = [cat for cat in categories_data if cat["companies"]]
 
-# 如果有分组数据，使用分组选择器
-if grouped_options:
-    display_labels = [opt[0] for opt in grouped_options]
-    ticker_map = {opt[0]: opt[1] for opt in grouped_options}
+if available_categories:
+    # 第一级: 选择分组
+    cat_names = [cat["name"] for cat in available_categories]
+    selected_cat_name = st.sidebar.selectbox("📁 选择分组", cat_names, key="nav_category")
     
-    selected_label = st.sidebar.selectbox("选择公司", display_labels)
-    selected_company = ticker_map[selected_label]
+    # 找到对应分组的公司列表
+    selected_cat_data = next((cat for cat in available_categories if cat["name"] == selected_cat_name), None)
+    
+    if selected_cat_data and selected_cat_data["companies"]:
+        # 第二级: 选择组内公司
+        company_options = [f"{comp['ticker']} - {comp['name']}" for comp in selected_cat_data["companies"]]
+        ticker_map = {f"{comp['ticker']} - {comp['name']}": comp["ticker"] for comp in selected_cat_data["companies"]}
+        
+        selected_label = st.sidebar.selectbox("🏢 选择公司", company_options, key="nav_company")
+        selected_company = ticker_map[selected_label]
+    else:
+        st.sidebar.warning("该分组暂无公司")
+        st.stop()
 else:
-    # 回退到简单列表
-    selected_company = st.sidebar.selectbox("选择公司", all_tickers)
+    # 回退到简单列表（无分组时）
+    selected_company = st.sidebar.selectbox("🏢 选择公司", all_tickers, key="nav_company_fallback")
 
 meta = get_company_meta(selected_company)
 current_unit = meta.get('unit', 'Billion')
@@ -86,7 +100,7 @@ region_flags = {
 }
 st.sidebar.markdown(f"**当前单位**: {current_unit} | **地区**: {region_flags.get(current_region, '')} {current_region}")
 
-# 3. 分组管理 (v2.1)
+# 3. 分组管理 (v2.2 - 优化交互逻辑)
 with st.sidebar.expander("📁 分组管理", expanded=False):
     mgmt_tab1, mgmt_tab2, mgmt_tab3 = st.tabs(["管理分组", "管理成员", "删除公司"])
     
@@ -127,24 +141,44 @@ with st.sidebar.expander("📁 分组管理", expanded=False):
                         st.rerun()
     
     with mgmt_tab2:
-        # 添加/移除公司到分组
+        # v2.2: 优化成员管理 — 分添加/移除两个子区域
         existing_cats = get_all_categories()
-        if existing_cats and all_tickers:
+        if existing_cats:
             cat_options = {c["name"]: c["id"] for c in existing_cats}
             target_cat = st.selectbox("目标分组", list(cat_options.keys()), key="member_target_cat")
-            target_ticker = st.selectbox("公司", all_tickers, key="member_ticker")
+            target_cat_id = cat_options[target_cat]
             
-            col_add, col_remove = st.columns(2)
-            with col_add:
+            # 添加区域：只显示不在该组的公司
+            st.markdown("**➕ 添加公司到分组**")
+            available_companies = get_companies_not_in_category(target_cat_id)
+            if available_companies:
+                add_options = [f"{c['ticker']} - {c['name']}" for c in available_companies]
+                add_ticker_map = {f"{c['ticker']} - {c['name']}": c['ticker'] for c in available_companies}
+                selected_add = st.selectbox("选择要添加的公司", add_options, key="member_add_select")
                 if st.button("➕ 添加到分组", key="btn_add_member"):
-                    add_company_to_category(cat_options[target_cat], target_ticker)
-                    st.success(f"已添加 {target_ticker} → {target_cat}")
+                    add_company_to_category(target_cat_id, add_ticker_map[selected_add])
+                    st.success(f"已添加 {add_ticker_map[selected_add]} → {target_cat}")
                     st.rerun()
-            with col_remove:
+            else:
+                st.caption("✅ 所有公司已在该分组中")
+            
+            st.markdown("---")
+            
+            # 移除区域：只显示当前组内的公司
+            st.markdown("**➖ 从分组移除公司**")
+            current_members = get_companies_in_category(target_cat_id)
+            if current_members:
+                remove_options = [f"{c['ticker']} - {c['name']}" for c in current_members]
+                remove_ticker_map = {f"{c['ticker']} - {c['name']}": c['ticker'] for c in current_members}
+                selected_remove = st.selectbox("选择要移除的公司", remove_options, key="member_remove_select")
                 if st.button("➖ 从分组移除", key="btn_remove_member"):
-                    remove_company_from_category(cat_options[target_cat], target_ticker)
-                    st.success(f"已移除 {target_ticker} ← {target_cat} (数据保留)")
+                    remove_company_from_category(target_cat_id, remove_ticker_map[selected_remove])
+                    st.success(f"已移除 {remove_ticker_map[selected_remove]} ← {target_cat} (数据保留)")
                     st.rerun()
+            else:
+                st.caption("该分组暂无公司")
+        else:
+            st.info("请先创建分组")
     
     with mgmt_tab3:
         # 彻底删除公司

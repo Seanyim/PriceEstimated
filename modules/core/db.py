@@ -601,6 +601,73 @@ def delete_company(ticker):
         conn.close()
 
 
+def detect_region_from_ticker(ticker: str) -> str:
+    """根据 Ticker 后缀自动推断市场地区
+    
+    规则:
+        *.SS / *.SZ  → CN (中国A股)
+        *.HK         → HK (港股)
+        *.T          → JP (日股)
+        *.TW         → TW (台股)
+        纯字母        → US (美股, 默认)
+    """
+    ticker_upper = ticker.strip().upper()
+    if ticker_upper.endswith('.SS') or ticker_upper.endswith('.SZ'):
+        return 'CN'
+    elif ticker_upper.endswith('.HK'):
+        return 'HK'
+    elif ticker_upper.endswith('.T'):
+        return 'JP'
+    elif ticker_upper.endswith('.TW'):
+        return 'TW'
+    return 'US'
+
+
+def get_companies_in_category(category_id):
+    """获取某个分组下的公司列表
+    
+    Returns: [{"ticker": "AAPL", "name": "Apple", "region": "US"}, ...]
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT cm.ticker, COALESCE(co.name, cm.ticker) as name,
+                            COALESCE(co.region, 'US') as region
+                     FROM category_members cm
+                     LEFT JOIN companies co ON cm.ticker = co.ticker
+                     WHERE cm.category_id = ?
+                     ORDER BY cm.ticker""", (category_id,))
+        rows = c.fetchall()
+        return [{"ticker": r[0], "name": r[1], "region": r[2]} for r in rows]
+    except:
+        return []
+    finally:
+        conn.close()
+
+
+def get_companies_not_in_category(category_id):
+    """获取不在某个分组中的公司列表，用于添加成员时过滤
+    
+    Returns: [{"ticker": "TSLA", "name": "Tesla", "region": "US"}, ...]
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT co.ticker, COALESCE(co.name, co.ticker) as name,
+                            COALESCE(co.region, 'US') as region
+                     FROM companies co
+                     WHERE co.ticker NOT IN (
+                         SELECT ticker FROM category_members WHERE category_id = ?
+                     )
+                     ORDER BY co.ticker""", (category_id,))
+        rows = c.fetchall()
+        return [{"ticker": r[0], "name": r[1], "region": r[2]} for r in rows]
+    except:
+        return []
+    finally:
+        conn.close()
+
+
 def auto_assign_company_to_region_category(ticker, region):
     """自动将新添加的公司分配到对应地区分组"""
     region_to_category = {
