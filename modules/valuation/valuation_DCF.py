@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from modules.core.calculator import process_financial_data
 from modules.core.db import get_company_meta, get_market_history
+from modules.valuation.valuation_advanced import _render_dcf_reverse, safe_get
 
 def render_valuation_DCF_tab(df_raw, wacc, rf, unit_label):
     st.subheader("🚀 DCF 现金流折现 v2.1")
@@ -309,6 +310,39 @@ def render_valuation_DCF_tab(df_raw, wacc, rf, unit_label):
         st.error(f"❌ WACC ({wacc:.1%}) 必须大于永续增长率 ({perp_rate:.1%})")
         return
 
+    # v2.5: 动态反馈约束 (倒推市场隐含增长率对比)
+    if market_cap > 0 and base_fcf > 0:
+        # 二分查找计算隐含增长率
+        low_g, high_g = -0.5, 1.0
+        fcf_dollars = base_fcf * 1e9 if base_fcf < 10000 else base_fcf
+        for _ in range(50):
+            mid_g = (low_g + high_g) / 2
+            c = fcf_dollars
+            tp = 0
+            for i in range(1, 6):
+                c *= (1 + mid_g)
+                tp += c / ((1 + wacc) ** i)
+            tv = c * (1 + perp_rate) / (wacc - perp_rate)
+            tp += tv / ((1 + wacc) ** 5)
+            if abs(tp - market_cap) < market_cap * 0.001:
+                break
+            if tp < market_cap:
+                low_g = mid_g
+            else:
+                high_g = mid_g
+        
+        implied_g = (low_g + high_g) / 2
+        delta_g = implied_g - growth_rate
+        implied_g_pct = implied_g * 100
+        input_g_pct = growth_rate * 100
+
+        if delta_g > 0.05:
+            st.warning(f"⚠️ **预期偏差提示**: 结合当前市值 ({market_cap/1e9:.1f}B)，市场隐含的前5年增长率预期约为 **{implied_g_pct:.1f}%**。您的输入 ({input_g_pct:.1f}%) 显著低于市场预期，如果您的判断正确，该股可能被**高估**。")
+        elif delta_g < -0.05:
+            st.success(f"🟢 **预期偏差提示**: 结合当前市值 ({market_cap/1e9:.1f}B)，市场隐含的前5年增长率预期约为 **{implied_g_pct:.1f}%**。您的输入 ({input_g_pct:.1f}%) 显著高于市场预期，如果您的判断正确，该股可能被**低估**。")
+        else:
+            st.info(f"⚖️ **预期偏差提示**: 您的输入 ({input_g_pct:.1f}%) 与当前市值隐含的增长率预期 ({implied_g_pct:.1f}%) 基本一致，估值合理。")
+
     # --- 增长率计算详情展示 (New) ---
     if growth_choice in growth_debug_info:
         info = growth_debug_info[growth_choice]
@@ -368,7 +402,7 @@ def render_valuation_DCF_tab(df_raw, wacc, rf, unit_label):
             c3_d.metric("R² (拟合优度)", f"{info['r_squared']:.2f}")
 
             if info['type'] == 'log_linear':
-                st.info("""
+                st.info(r"""
                 **Log-Linear 模型推导过程**:
                 1. **数据预处理**: 取 FCF 的自然对数 $y' = \ln(FCF)$
                 2. **线性回归**: 对 $y'$ 和 $t$ (年份差) 做回归，得到 $y' = a \cdot t + b$
@@ -669,3 +703,9 @@ def render_valuation_DCF_tab(df_raw, wacc, rf, unit_label):
 - 基准估值: **{enterprise_value:,.0f} {unit_label}** (WACC={wacc*100:.1f}%, g={perp_rate*100:.1f}%)
 - 估值弹性: WACC 每变动 0.5%，企业价值约变动 {abs(res_matrix[len(valid_g)//2][3] - res_matrix[len(valid_g)//2][4]):,.0f} {unit_label} (如果存在的话)
         """)
+
+    # === v2.3: DCF 倒推分析 (从高级模型合并) ===
+    st.divider()
+    st.markdown("## 🔄 DCF 倒推分析 (Reverse DCF)")
+    st.caption("以下内容基于当前市值倒推市场隐含的增长率预期，含敏感性矩阵。")
+    _render_dcf_reverse(df_single_q, latest_q, meta, wacc, rf, unit_label, df_raw)

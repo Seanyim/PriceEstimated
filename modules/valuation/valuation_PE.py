@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from modules.core.calculator import process_financial_data
 from modules.core.db import get_market_history, get_company_meta
 from modules.data.industry_data import get_industry_benchmarks
+from modules.valuation.valuation_advanced import _render_peg_analysis, safe_get
 
 
 def _calculate_percentile(data: pd.Series, value: float) -> float:
@@ -224,6 +225,17 @@ def render_valuation_PE_tab(df_raw, unit_label):
     peg_status = "低估" if peg < 1 else "合理" if peg < 1.5 else "高估"
     st.info(f"📊 **数据分析**: 当前 PEG 为 {peg:.2f}，处于 **{peg_status}** 区间。基于 {growth_rate:.1f}% 的预期增长率，市场给予的估值倍数为 {current_pe_ttm:.1f}x。")
         
+    # v2.5: 动态反馈约束 (倒推市场隐含增长率)
+    implied_growth = current_pe_ttm - 2 * rf_rate  # Fisher
+    delta_g = implied_growth - input_growth
+    if input_growth > 0:
+        if delta_g > 5:
+            st.warning(f"⚠️ **预期偏差提示**: 市场当前 PE ({current_pe_ttm:.1f}x) 隐含的预期增长率为 **{implied_growth:.1f}%**。您的预期 ({input_growth:.1f}%) 显著低于市场预期，如果您的判断正确，该股目前可能被**严重高估**。")
+        elif delta_g < -5:
+            st.success(f"🟢 **预期偏差提示**: 市场当前 PE ({current_pe_ttm:.1f}x) 隐含的预期增长率为 **{implied_growth:.1f}%**。您的预期 ({input_growth:.1f}%) 显著高于市场预期，如果您的判断正确，该股目前可能被**严重低估**。")
+        else:
+            st.info(f"⚖️ **预期偏差提示**: 您的预期 ({input_growth:.1f}%) 与市场隐含增长率 ({implied_growth:.1f}%) 基本一致。")
+
     eps_forward = current_eps_ttm * (1 + input_growth / 100)
     pe_forward = current_price / eps_forward if eps_forward > 0 else None
     
@@ -471,3 +483,100 @@ def render_valuation_PE_tab(df_raw, unit_label):
         st.caption(f"💡 PEG 使用的增长率：{growth_rate:.2f}% (来源: {growth_source})")
     else:
         st.caption("⚠️ 无法自动计算 PEG：需要正的利润增长率数据")
+
+    # === v2.3: PEG 倒推分析 (从高级模型合并) ===
+    st.divider()
+    st.markdown("## 🔄 PEG 倒推分析 (高级)")
+    st.caption("以下内容基于 PEG 模型进行倒推估值，含费雪利率修正和敏感性分析。")
+    
+    # 获取必要数据
+    _, df_single_for_peg = process_financial_data(df_raw)
+    if not df_single_for_peg.empty:
+        latest_for_peg = df_single_for_peg.iloc[-1]
+        meta_for_peg = get_company_meta(ticker)
+        _render_peg_analysis(df_single_for_peg, latest_for_peg, meta_for_peg, unit_label)
+
+    # === v2.4: PE/PEG 正推-倒推交叉验证 ===
+    st.divider()
+    st.markdown("## 🔀 PE/PEG 正推-倒推交叉验证")
+    st.caption("将正推估值结果与倒推隐含增长率进行交叉对比，识别一致性信号与潜在矛盾。")
+    
+    try:
+        from modules.core.risk_free_rate import get_risk_free_rate
+        rf_rate = get_risk_free_rate(use_cache=True)
+        rf_pct = rf_rate * 100
+        
+        # --- 收集正推数据 ---
+        # PE Band 合理价格区间
+        fair_low = pe_20 * current_eps_ttm  # 20% 分位
+        fair_mid = pe_median * current_eps_ttm  # 中位数
+        fair_high = pe_80 * current_eps_ttm  # 80% 分位
+
+        # PEG=1 合理价格
+        actual_growth_pct = growth_rate if growth_rate else 0
+        peg1_fair = actual_growth_pct * current_eps_ttm  # PEG=1 时 合理PE = G
+        
+        # Fisher 修正合理价格
+        fisher_fair_pe = actual_growth_pct + 2 * rf_pct
+        fisher_fair = fisher_fair_pe * current_eps_ttm
+        
+        # --- 收集倒推数据 ---
+        # Fisher 模型倒推: 当前PE隐含的增长率
+        implied_growth = current_pe_ttm - 2 * rf_pct  # PE = G + 2*rf => G = PE - 2*rf
+        
+        # --- 交叉验证表格 ---
+        st.markdown("### 📊 估值对比一览")
+        
+        compare_data = {
+            "估值方法": ["PE Band 低位 (20%)", "PE Band 中枢 (50%)", "PE Band 高位 (80%)", 
+                       "PEG=1 合理价", "Fisher 修正合理价"],
+            "合理股价": [f"${fair_low:.2f}", f"${fair_mid:.2f}", f"${fair_high:.2f}",
+                       f"${peg1_fair:.2f}" if actual_growth_pct > 0 else "N/A",
+                       f"${fisher_fair:.2f}" if actual_growth_pct > 0 else "N/A"],
+            "vs 当前股价": [f"{(fair_low/current_price-1)*100:+.1f}%", 
+                          f"{(fair_mid/current_price-1)*100:+.1f}%",
+                          f"{(fair_high/current_price-1)*100:+.1f}%",
+                          f"{(peg1_fair/current_price-1)*100:+.1f}%" if actual_growth_pct > 0 else "N/A",
+                          f"{(fisher_fair/current_price-1)*100:+.1f}%" if actual_growth_pct > 0 else "N/A"],
+            "判断": ["低估 ✅" if fair_low > current_price else "高估 ⚠️",
+                    "低估 ✅" if fair_mid > current_price else "高估 ⚠️",
+                    "低估 ✅" if fair_high > current_price else "高估 ⚠️",
+                    ("低估 ✅" if peg1_fair > current_price else "高估 ⚠️") if actual_growth_pct > 0 else "—",
+                    ("低估 ✅" if fisher_fair > current_price else "高估 ⚠️") if actual_growth_pct > 0 else "—"]
+        }
+        st.dataframe(pd.DataFrame(compare_data), use_container_width=True, hide_index=True)
+        
+        # --- 增长率一致性检验 ---
+        st.markdown("### 🔍 增长率一致性检验")
+        
+        c_cv1, c_cv2, c_cv3 = st.columns(3)
+        c_cv1.metric("实际/预期增长率", f"{actual_growth_pct:.1f}%" if actual_growth_pct > 0 else "N/A",
+                    help="来自财报数据的 EPS 增长率")
+        c_cv2.metric("市场隐含增长率 (Fisher)", f"{implied_growth:.1f}%",
+                    help="当前 PE 隐含的增长率 = PE - 2×Rf")
+        
+        if actual_growth_pct > 0:
+            gap = implied_growth - actual_growth_pct
+            c_cv3.metric("增长率偏差", f"{gap:+.1f}%",
+                        "市场更乐观" if gap > 0 else "市场更保守",
+                        delta_color="inverse")
+        
+        # --- 综合信号判断 ---
+        st.markdown("### 💡 综合信号判断")
+        
+        signals = []
+        low_count = sum(1 for v in [fair_low, fair_mid, fair_high] if v > current_price)
+        
+        if low_count >= 2 and implied_growth < actual_growth_pct:
+            st.success("🟢 **强低估信号**: PE Band 多数位于低估区间，且市场隐含增长率低于实际增长率 — 市场未充分计入增长预期。")
+        elif low_count <= 1 and implied_growth > actual_growth_pct * 1.3:
+            st.error("🔴 **高估警告**: PE Band 多数显示高估，且市场隐含增长率显著高于实际 — 当前估值透支了过高的增长预期。")
+        elif low_count >= 2 and implied_growth > actual_growth_pct * 1.2:
+            st.warning("🟡 **矛盾信号**: PE Band 显示低估，但倒推隐含增长率高于实际 — 需审视增长率假设是否合理。")
+        elif low_count <= 1 and implied_growth < actual_growth_pct:
+            st.warning("🟡 **矛盾信号**: PE Band 显示高估，但倒推增长率低于实际 — 可能处于估值修复阶段。")
+        else:
+            st.info("📊 **中性信号**: 正推与倒推估值基本一致，估值处于合理区间。")
+        
+    except Exception as e:
+        st.warning(f"交叉验证计算异常: {e}")

@@ -12,12 +12,19 @@ from modules.ui.charts import render_charts_tab
 from modules.valuation.valuation_PE import render_valuation_PE_tab
 from modules.valuation.valuation_DCF import render_valuation_DCF_tab
 from modules.valuation.valuation_analyst import render_analyst_tab
-from modules.valuation.valuation_advanced import render_advanced_valuation_tab
+from modules.valuation.valuation_summary import render_summary_tab
+from modules.valuation.valuation_dashboard import render_dashboard_tab
+from modules.valuation.master_analysis import render_master_analysis_tab
+from modules.valuation.valuation_advanced import (
+    _render_ev_ebitda, _render_growth_analysis, 
+    _render_monte_carlo, _render_profitability_analysis,
+    safe_get
+)
+from modules.core.calculator import process_financial_data
 from modules.core.wacc import render_wacc_module
-from modules.ai.analysis import render_ai_tab
 
-st.set_page_config(page_title="Valuation Pro v2.1", layout="wide")
-st.title("📊 企业估值系统 v2.1")
+st.set_page_config(page_title="Valuation Pro v2.5", layout="wide")
+st.title("📊 企业估值系统 v2.5")
 
 # 初始化数据库
 init_db()
@@ -208,8 +215,8 @@ st.sidebar.caption("💡 Proxy 用于 yfinance 数据获取")
 raw_records = get_financial_records(selected_company)
 df_raw = pd.DataFrame(raw_records)
 
-# --- 主界面 ---
-tab1, tab2, tab3, tab4 = st.tabs(["📝 数据录入", "📈 趋势分析", "🧮 估值模型", "🤖 AI 分析"])
+# --- 主界面 (v2.5.2) ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 数据录入", "📈 趋势分析", "🧮 估值模型", "🧠 大师分析", "📋 估值总结"])
 
 with tab1:
     render_entry_tab(selected_company, current_unit)
@@ -218,30 +225,97 @@ with tab2:
     render_charts_tab(df_raw, current_unit)
 
 with tab3:
-    # WACC 模块（在顶部，供所有子 Tab 使用）
+    # WACC 模块（在顶部，供估值模型的所有子 Tab 使用）
     wacc, rf = render_wacc_module(df_raw)
     
     st.divider()
     
-    # 估值模型子 Tab
-    val_tab1, val_tab2, val_tab3, val_tab4 = st.tabs([
-        "📉 PE 估值", 
-        "🚀 DCF 估值",
-        "🔬 高级模型",
-        "📊 分析师预测"
+    # 估值模型子 Tab (移除了估值总结，保留前8个)
+    vt1, vt2, vt3, vt4, vt5, vt6, vt7, vt8 = st.tabs([
+        "📉 PE/PEG", 
+        "🚀 DCF",
+        "💹 EV/EBITDA",
+        "📈 增长透视",
+        "🎲 Monte Carlo",
+        "📉 ROIC/ROA/ROE",
+        "📊 分析师预测",
+        "🔀 估值整合"
     ])
     
-    with val_tab1:
+    with vt1:
         render_valuation_PE_tab(df_raw, current_unit)
         
-    with val_tab2:
+    with vt2:
         render_valuation_DCF_tab(df_raw, wacc, rf, current_unit)
     
-    with val_tab3:
-        render_advanced_valuation_tab(df_raw, current_unit, wacc, rf)
+    with vt3:
+        # EV/EBITDA 独立 Tab
+        st.subheader("💹 EV/EBITDA 分析")
+        if not df_raw.empty:
+            _, _df_s = process_financial_data(df_raw)
+            if not _df_s.empty:
+                _latest = _df_s.iloc[-1]
+                _meta = get_company_meta(selected_company)
+                _render_ev_ebitda(_df_s, _latest, _meta, current_unit)
+            else:
+                st.warning("财务数据不足")
+        else:
+            st.warning("请先录入财务数据")
     
-    with val_tab4:
+    with vt4:
+        # 增长率透视独立 Tab
+        st.subheader("📈 增长率透视")
+        if not df_raw.empty:
+            _, _df_s = process_financial_data(df_raw)
+            if not _df_s.empty:
+                _render_growth_analysis(_df_s, current_unit)
+            else:
+                st.warning("财务数据不足")
+        else:
+            st.warning("请先录入财务数据")
+    
+    with vt5:
+        # Monte Carlo 独立 Tab
+        st.subheader("🎲 Monte Carlo 模拟")
+        if not df_raw.empty:
+            _, _df_s = process_financial_data(df_raw)
+            if not _df_s.empty:
+                _latest = _df_s.iloc[-1]
+                _meta = get_company_meta(selected_company)
+                _render_monte_carlo(_df_s, _latest, _meta, wacc, current_unit)
+            else:
+                st.warning("财务数据不足")
+        else:
+            st.warning("请先录入财务数据")
+    
+    with vt6:
+        # ROIC/ROA/ROE 独立 Tab
+        st.subheader("📉 ROIC/ROA/ROE 分析")
+        if not df_raw.empty:
+            _, _df_s = process_financial_data(df_raw)
+            if not _df_s.empty:
+                _render_profitability_analysis(_df_s, current_unit)
+            else:
+                st.warning("财务数据不足")
+        else:
+            st.warning("请先录入财务数据")
+    
+    with vt7:
         render_analyst_tab(selected_company, df_raw)
+    
+    with vt8:
+        # 估值整合仪表盘 — 正推/倒推动态整合
+        render_dashboard_tab(selected_company, df_raw, current_unit, wacc, rf)
+
+# 🛡️ NameError 防护: 如果 tab3 的 render_wacc_module 因异常未执行完毕，
+# wacc / rf 变量不存在，使用保守默认值做降级回退 (WACC=10%, Rf=4%)
+safe_wacc = wacc if 'wacc' in dir() else 0.10
+safe_rf = rf if 'rf' in dir() else 0.04
 
 with tab4:
-    render_ai_tab(selected_company, df_raw)
+    # 九大投资大师多维分析（先于估值总结，结果供总结使用）
+    render_master_analysis_tab(selected_company, df_raw, current_unit, safe_wacc, safe_rf)
+
+with tab5:
+    # 估值总结作为最终汇总 Tab — 集成大师评分 + 敏感性分析
+    render_summary_tab(selected_company, df_raw, current_unit, safe_wacc, safe_rf)
