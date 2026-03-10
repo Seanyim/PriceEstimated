@@ -15,6 +15,7 @@ from modules.valuation.valuation_advanced import safe_get
 from modules.valuation.master_analysis import (
     compute_master_scores, MASTER_DEFINITIONS
 )
+from modules.valuation.qg_pro_model import compute_qg_pro_score
 
 
 # ============================================================
@@ -548,7 +549,8 @@ def _render_pe_sensitivity(data: dict):
 
 def _render_signal_panel(data: dict, forward_results: dict,
                          intrinsic_value: float, margin: float,
-                         master_scores: Optional[dict]):
+                         master_scores: Optional[dict],
+                         qg_scores: Optional[dict] = None):
     """区块 6: 综合信号面板"""
     current_price = data['current_price']
     latest = data['latest']
@@ -578,9 +580,14 @@ def _render_signal_panel(data: dict, forward_results: dict,
         available = [master_scores[k]['score'] for k in master_scores if master_scores[k]['available']]
         if available:
             master_avg = np.mean(available)
+            
+    # 信号4: QG-Pro
+    qg_score = None
+    if qg_scores and qg_scores.get('available'):
+        qg_score = qg_scores.get('score')
 
     signal_data = {
-        "维度": ["模型共识", "安全边际", "盈利质量", "大师评分", "综合评级"],
+        "维度": ["模型共识", "安全边际", "盈利质量", "大师评分", "QG-Pro 质量", "综合评级"],
         "结果": [],
         "信号": [],
     }
@@ -622,11 +629,24 @@ def _render_signal_panel(data: dict, forward_results: dict,
         signal_data["结果"].append("N/A")
         signal_data["信号"].append("—")
 
+    # QG-Pro 质量
+    if qg_score is not None:
+        signal_data["结果"].append(f"{qg_score:.0f}/100")
+        signal_data["信号"].append(
+            "✅ 增长优质" if qg_score >= 70 else
+            "📊 质量一般" if qg_score >= 40 else
+            "⚠️ 增长恶化"
+        )
+    else:
+        signal_data["结果"].append("N/A")
+        signal_data["信号"].append("—")
+
     # 综合评级
     scores = [
         50 + margin if forward_results else 50,
         quality_score,
         master_avg if master_avg else 50,
+        qg_score if qg_score else 50,
     ]
     total_score = np.mean(scores)
     if total_score >= 70:
@@ -644,6 +664,94 @@ def _render_signal_panel(data: dict, forward_results: dict,
     signal_data["信号"].append(overall)
 
     st.dataframe(pd.DataFrame(signal_data), use_container_width=True, hide_index=True)
+
+
+def _render_qg_pro_panel(qg_scores: Optional[dict]):
+    """区块 3.5: QG-Pro 机构实盘级多因子质量模型"""
+    if not qg_scores:
+        return
+
+    st.markdown("### 🎯 QG-Pro 增长质量模型 (机构级)")
+    st.caption("综合评估盈利质量、下行风险及基本面加速动能 (基于绝对阈值评价)")
+
+    score = qg_scores.get('score', 50)
+    factors = qg_scores.get('factors', {})
+    available = qg_scores.get('available', False)
+    dim_scores = qg_scores.get('dim_scores', {})
+
+    if not available:
+        st.info("⚠️ 数据不足，无法计算 QG-Pro 因子，采用默认中性分数 (50)")
+
+    col1, col2 = st.columns([2, 2])
+
+    with col1:
+        if score >= 70:
+            badge = "优异"
+            delta_color = "normal"
+        elif score >= 40:
+            badge = "一般"
+            delta_color = "off"
+        else:
+            badge = "偏弱"
+            delta_color = "inverse"
+
+        st.metric(
+            label="QG-Pro 综合得分",
+            value=f"{score:.0f}/100",
+            delta=badge,
+            delta_color=delta_color
+        )
+        
+        st.markdown("**底层驱动因子**:")
+        for fname, fval in factors.items():
+            if not fname.startswith("⚠️"):
+                st.write(f"- **{fname}**: {fval}")
+
+    with col2:
+        if dim_scores:
+            categories = ['增长加速 (G_adj)', '下行控制 (S_down)', '防雷安全 (D_risk)', '盈余质量 (CF_quality)']
+            values = [
+                dim_scores.get('G_adj', 50),
+                dim_scores.get('S_down', 50),
+                dim_scores.get('D_risk', 50),
+                dim_scores.get('CF_quality', 50)
+            ]
+            
+            # 闭合曲线
+            categories = categories + [categories[0]]
+            values = values + [values[0]]
+            
+            if score >= 70:
+                fill_color, line_color = "rgba(46, 204, 113, 0.25)", "#2ECC71"
+            elif score >= 40:
+                fill_color, line_color = "rgba(241, 196, 15, 0.25)", "#F1C40F"
+            else:
+                fill_color, line_color = "rgba(231, 76, 60, 0.25)", "#E74C3C"
+                
+            fig = go.Figure()
+            fig.add_trace(go.Scatterpolar(
+                r=values, theta=categories,
+                fill='toself', fillcolor=fill_color,
+                line=dict(color=line_color, width=2),
+                marker=dict(size=6, color=line_color),
+                hovertemplate="%{theta}<br>得分: %{r:.0f}/100<extra></extra>"
+            ))
+            fig.add_trace(go.Scatterpolar(
+                r=[60]*5, theta=categories,
+                line=dict(color="rgba(150,150,150,0.4)", width=1, dash="dash"),
+                hoverinfo='skip', showlegend=False
+            ))
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True, range=[0, 100], tickvals=[20,40,60,80,100]),
+                    bgcolor="rgba(0,0,0,0)"
+                ),
+                showlegend=False,
+                margin=dict(l=40, r=40, t=20, b=20),
+                height=300,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
 
 
 # ============================================================
@@ -788,6 +896,18 @@ def render_summary_tab(ticker, df_raw, unit_label, wacc, rf):
         except Exception:
             master_scores = None
 
+    # === QG-Pro 评分 ===
+    qg_scores = st.session_state.get('qg_scores', None)
+    if qg_scores is None:
+        try:
+            _, df_single = process_financial_data(df_raw)
+            if not df_single.empty:
+                latest = df_single.iloc[-1]
+                qg_scores = compute_qg_pro_score(df_single, latest)
+                st.session_state['qg_scores'] = qg_scores
+        except Exception:
+            qg_scores = None
+
     # === 渲染各区块 ===
     intrinsic_value, margin = _render_executive_metrics(data, forward_results, master_scores)
 
@@ -801,6 +921,10 @@ def render_summary_tab(ticker, df_raw, unit_label, wacc, rf):
 
     st.divider()
 
+    _render_qg_pro_panel(qg_scores)
+
+    st.divider()
+
     # 敏感性分析 (两栏布局)
     _render_dcf_sensitivity(data)
 
@@ -811,7 +935,7 @@ def render_summary_tab(ticker, df_raw, unit_label, wacc, rf):
     st.divider()
 
     # 综合信号面板
-    _render_signal_panel(data, forward_results, intrinsic_value, margin, master_scores)
+    _render_signal_panel(data, forward_results, intrinsic_value, margin, master_scores, qg_scores)
 
     # === Markdown 报告下载 ===
     st.divider()
